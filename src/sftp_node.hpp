@@ -29,12 +29,12 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
-typedef struct DirItem_s DirItem_t;
-typedef struct SftpWatch_s SftpWatch_t;
+typedef struct DirItem_s                 DirItem_t;
+typedef struct SftpWatch_s               SftpWatch_t;
 typedef std::map<std::string, DirItem_t> PairFileDet_t;
 
 struct DirItem_s {
-	uint8_t type = 0;
+	uint8_t     type = 0;
 	std::string name;
 
 	LIBSSH2_SFTP_ATTRIBUTES attrs;

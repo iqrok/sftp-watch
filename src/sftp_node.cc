@@ -31,52 +31,50 @@ static void finalizer_sync_dir(
 	watchers.erase(id);
 }
 
+static void sync_dir_tsfn_cb(
+	Napi::Env env, Napi::Function js_cb, NewAndRemovedFiles_t* files)
+{
+	uint32_t    i       = 0;
+	Napi::Array created = Napi::Array::New(env, files->created.size());
+
+	for (const auto& pair : files->created) {
+		DirItem_t    item = pair.second;
+		Napi::Object obj  = Napi::Object::New(env);
+
+		obj.Set("name", Napi::String::New(env, pair.first));
+		obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
+		obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
+		obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
+		obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
+
+		created.Set(i++, obj);
+	}
+
+	i                   = 0;
+	Napi::Array removed = Napi::Array::New(env, files->removed.size());
+
+	for (const auto& pair : files->removed) {
+		DirItem_t    item = pair.second;
+		Napi::Object obj  = Napi::Object::New(env);
+
+		obj.Set("name", Napi::String::New(env, pair.first));
+		obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
+		obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
+		obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
+		obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
+
+		removed.Set(i++, obj);
+	}
+
+	Napi::Object collection = Napi::Object::New(env);
+	collection.Set("created", created);
+	collection.Set("removed", removed);
+
+	js_cb.Call({ collection });
+}
+
 static void thread_sync_dir(SftpWatch_t* ctx)
 {
-	auto routine_cb
-		= [](Napi::Env env, Napi::Function js_cb,
-			NewAndRemovedFiles_t* files) {
-				uint32_t i = 0;
-				Napi::Array created
-					= Napi::Array::New(env, files->created.size());
-
-				for (const auto& pair : files->created) {
-					DirItem_t item   = pair.second;
-					Napi::Object obj = Napi::Object::New(env);
-
-					obj.Set("name", Napi::String::New(env, pair.first));
-					obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
-					obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
-					obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
-					obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
-
-					created.Set(i++, obj);
-				}
-
-				i = 0;
-				Napi::Array removed
-					= Napi::Array::New(env, files->removed.size());
-
-				for (const auto& pair : files->removed) {
-					DirItem_t item   = pair.second;
-					Napi::Object obj = Napi::Object::New(env);
-
-					obj.Set("name", Napi::String::New(env, pair.first));
-					obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
-					obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
-					obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
-					obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
-
-					removed.Set(i++, obj);
-				}
-
-				Napi::Object collection = Napi::Object::New(env);
-				collection.Set("created", created);
-				collection.Set("removed", removed);
-
-				js_cb.Call({ collection });
-			};
-
 	while (!ctx->is_stopped) {
 		NewAndRemovedFiles_t list;
 		PairFileDet_t        current;
@@ -119,7 +117,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		// update last data
 		ctx->last_files = current;
 
-		if (ctx->tsfn.NonBlockingCall(&list, routine_cb) != napi_ok) {
+		if (ctx->tsfn.NonBlockingCall(&list, sync_dir_tsfn_cb) != napi_ok) {
 			Napi::Error::Fatal("thread_si", "NonBlockingCall() failed");
 		}
 
@@ -176,28 +174,30 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	if (arg.Has("remote_path")) {
-		if (!arg.Get("remote_path").IsString() || arg.Get("remote_path").IsEmpty()) {
-			Napi::TypeError::New(env, "'remote_path' is empty")
+	if (arg.Has("remotePath")) {
+		if (!arg.Get("remotePath").IsString()
+			|| arg.Get("remotePath").IsEmpty()) {
+			Napi::TypeError::New(env, "'remotePath' is empty")
 				.ThrowAsJavaScriptException();
 			return Napi::Boolean::New(env, false);
 		}
 
-		remote_path = arg.Get("remote_path").As<Napi::String>().Utf8Value();
+		remote_path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
 	} else {
-		Napi::TypeError::New(env, "'remote_path' is undefined")
+		Napi::TypeError::New(env, "'remotePath' is undefined")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
 
-	if (arg.Has("local_path")) {
-		if (!arg.Get("local_path").IsString() || arg.Get("local_path").IsEmpty()) {
-			Napi::TypeError::New(env, "'local_path' is empty")
+	if (arg.Has("localPath")) {
+		if (!arg.Get("localPath").IsString()
+			|| arg.Get("localPath").IsEmpty()) {
+			Napi::TypeError::New(env, "'localPath' is empty")
 				.ThrowAsJavaScriptException();
 			return Napi::Boolean::New(env, false);
 		}
 
-		local_path = arg.Get("local_path").As<Napi::String>().Utf8Value();
+		local_path = arg.Get("localPath").As<Napi::String>().Utf8Value();
 	}
 
 	if (arg.Has("pubkey")) {
@@ -327,16 +327,15 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 	SftpWatch_t* ctx = watchers.at(id);
 
 	ctx->is_stopped = false;
-	ctx->tsfn = Napi::ThreadSafeFunction::New(
-		env,   // Environment
-		js_cb, // JS function from caller
-		std::string("watcher_") + std::to_string(id), // Resource name
-		0,                  // Max queue_si size (0 = unlimited).
-		1,                  // Initial thread count
-		ctx,                // Context,
-		finalizer_sync_dir, // Finalizer
-		(void*)nullptr      // Finalizer data
-	);
+	ctx->tsfn       = Napi::ThreadSafeFunction::New(env, // Environment
+			  js_cb, // JS function from caller
+			  std::string("watcher_") + std::to_string(id), // Resource name
+			  0,                  // Max queue_si size (0 = unlimited).
+			  1,                  // Initial thread count
+			  ctx,                // Context,
+			  finalizer_sync_dir, // Finalizer
+			  (void*)nullptr      // Finalizer data
+		  );
 
 	ctx->thread = std::thread(thread_sync_dir, ctx);
 

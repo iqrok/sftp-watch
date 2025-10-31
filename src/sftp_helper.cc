@@ -37,7 +37,8 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 	hints.ai_family   = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 
-	rc = getaddrinfo(ctx->host.c_str(), std::to_string(ctx->port).c_str(), &hints, &res);
+	rc = getaddrinfo(
+		ctx->host.c_str(), std::to_string(ctx->port).c_str(), &hints, &res);
 	if (rc != 0 || !res) {
 		printf("FAILED getaddrinfo %d %d\n", rc, errno);
 		if (res) freeaddrinfo(res);
