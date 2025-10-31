@@ -3,11 +3,14 @@
 #include <libssh2_sftp.h>
 
 #ifdef __linux__
+#	include <netdb.h>
 #	include <sys/socket.h>
 #	include <unistd.h>
 #	include <netinet/in.h>
 #	include <arpa/inet.h>
 #endif
+
+#include <string>
 
 #include "sftp_helper.hpp"
 
@@ -15,7 +18,7 @@ static bool is_inited = true;
 
 int32_t SftpHelper::connect(SftpWatch_t* ctx)
 {
-	int rc;
+	int32_t rc;
 
 	if (!is_inited) {
 		if ((rc = libssh2_init(0)) != 0) {
@@ -26,21 +29,37 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		is_inited = true;
 	}
 
-	ctx->sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (ctx->sock == LIBSSH2_INVALID_SOCKET) {
-		fprintf(stderr, "failed to create socket.\n");
+	struct addrinfo  hints;
+	struct addrinfo* res = NULL;
+
+	memset(&hints, 0, sizeof(hints));
+
+	hints.ai_family   = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+
+	rc = getaddrinfo(ctx->host.c_str(), std::to_string(ctx->port).c_str(), &hints, &res);
+	if (rc != 0 || !res) {
+		printf("FAILED getaddrinfo %d %d\n", rc, errno);
+		if (res) freeaddrinfo(res);
+
 		return -1;
 	}
 
-	ctx->sin.sin_family      = AF_INET;
-	ctx->sin.sin_port        = htons(ctx->port);
-	ctx->sin.sin_addr.s_addr = inet_addr(ctx->host.c_str());
-	rc                       = connect(
-        ctx->sock, (struct sockaddr*)(&ctx->sin), sizeof(struct sockaddr_in));
+	ctx->sock = socket(res->ai_family, res->ai_socktype, 0);
+	if (ctx->sock == LIBSSH2_INVALID_SOCKET) {
+		fprintf(stderr, "failed to create socket.\n");
+		freeaddrinfo(res);
+
+		return -1;
+	}
+
+	rc = connect(ctx->sock, res->ai_addr, res->ai_addrlen);
 	if (rc) {
 		fprintf(stderr, "failed to connect. (%d) [%s:%u]\n", rc,
 			ctx->host.c_str(), ctx->port);
-		return -1;
+		freeaddrinfo(res);
+
+		return rc;
 	}
 
 	/* Create a session instance */
