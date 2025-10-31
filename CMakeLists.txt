@@ -27,7 +27,9 @@ set(INC_DIR "${SRC_DIR}/include")
 add_definitions(-DNAPI_VERSION=6 -DNAPI_DISABLE_CPP_EXCEPTIONS)
 
 add_library("${PROJECT_NAME}" SHARED
-		"${SRC_DIR}/sftp_nonblock.cc"
+		#~ "${SRC_DIR}/sftp_nonblock.cc"
+		"${SRC_DIR}/sftp_helper.cc"
+		"${SRC_DIR}/sftp_node.cc"
 	)
 set_target_properties("${PROJECT_NAME}"
 	PROPERTIES POSITION_INDEPENDENT_CODE 1

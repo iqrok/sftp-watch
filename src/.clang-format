@@ -1,0 +1,28 @@
+BasedOnStyle: WebKit
+UseTab: AlignWithSpaces
+IndentWidth: 4
+TabWidth: 4
+ColumnLimit: 80
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortLoopsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: true
+AlignEscapedNewlines: Right
+AlignConsecutiveMacros: true
+AlignConsecutiveBitFields:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: true
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: true
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: true
+IndentPPDirectives: AfterHash
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 2
+MaxEmptyLinesToKeep: 1
