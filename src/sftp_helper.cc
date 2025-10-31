@@ -138,19 +138,25 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 	return 0;
 }
 
-int32_t SftpHelper::read_dir(SftpWatch_t* ctx, SftpHelper::DirItem_t* file)
+int32_t SftpHelper::read_dir(SftpWatch_t* ctx, DirItem_t* file)
 {
 	int rc = 0;
 
 	while ((rc = libssh2_sftp_readdir(ctx->sftp_handle, file->name,
-				SftpHelper::filename_max_len, &file->attrs))
+				filename_max_len, &file->attrs))
 		== LIBSSH2_ERROR_EAGAIN);
 
 	// either there's a record or should try again
-	if (rc > 0 || rc == LIBSSH2_ERROR_EAGAIN) return 1;
+	if (rc > 0) {
+		file->type = SftpHelper::get_filetype(file);
+		return 1;
+	}
+
+	if (rc == LIBSSH2_ERROR_EAGAIN) return 2;
 
 	// read dir is finished
 	return 0;
+
 	//~ if(rc > 0) {
 	/* rc is the length of the file name in the mem
 	   buffer */
@@ -184,4 +190,29 @@ int32_t SftpHelper::read_dir(SftpWatch_t* ctx, SftpHelper::DirItem_t* file)
 	//~ else {
 	//~ break;
 	//~ }
+}
+
+uint8_t SftpHelper::get_filetype(DirItem_t* file)
+{
+	if (file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
+		if (LIBSSH2_SFTP_S_ISREG(file->attrs.permissions)) {
+			return IS_REG_FILE;
+		} else if (LIBSSH2_SFTP_S_ISDIR(file->attrs.permissions)) {
+			return IS_DIR;
+		} else if (LIBSSH2_SFTP_S_ISLNK(file->attrs.permissions)) {
+			return IS_SYMLINK;
+		} else if (LIBSSH2_SFTP_S_ISCHR(file->attrs.permissions)) {
+			return IS_CHR_FILE;
+		} else if (LIBSSH2_SFTP_S_ISBLK(file->attrs.permissions)) {
+			return IS_BLK_FILE;
+		} else if (LIBSSH2_SFTP_S_ISFIFO(file->attrs.permissions)) {
+			return IS_PIPE;
+		} else if (LIBSSH2_SFTP_S_ISSOCK(file->attrs.permissions)) {
+			return IS_SOCK;
+		} else {
+			return IS_INVALID;
+		}
+	} else {
+		return IS_INVALID;
+	}
 }
