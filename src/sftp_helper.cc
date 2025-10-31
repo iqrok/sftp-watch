@@ -161,54 +161,23 @@ int32_t SftpHelper::read_dir(SftpWatch_t* ctx, DirItem_t* file)
 {
 	int rc = 0;
 
-	while ((rc = libssh2_sftp_readdir(ctx->sftp_handle, file->name,
-				filename_max_len, &file->attrs))
+	char filename[SftpHelper::FILENAME_MAX_LEN];
+	while ((rc = libssh2_sftp_readdir(ctx->sftp_handle, filename,
+				SftpHelper::FILENAME_MAX_LEN, &file->attrs))
 		== LIBSSH2_ERROR_EAGAIN);
 
-	// either there's a record or should try again
+	// there's a record
 	if (rc > 0) {
+		file->name = std::string(filename);
 		file->type = SftpHelper::get_filetype(file);
 		return 1;
 	}
 
+	// should try again
 	if (rc == LIBSSH2_ERROR_EAGAIN) return 2;
 
 	// read dir is finished
 	return 0;
-
-	//~ if(rc > 0) {
-	/* rc is the length of the file name in the mem
-	   buffer */
-
-	//~ if(attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
-	//~ /* this should check what permissions it
-	//~ is and print the output accordingly */
-	//~ printf("--fix----- ");
-	//~ }
-	//~ else {
-	//~ printf("---------- ");
-	//~ }
-
-	//~ if(attrs.flags & LIBSSH2_SFTP_ATTR_UIDGID) {
-	//~ printf("%4d %4d ", (int) attrs.uid, (int) attrs.gid);
-	//~ }
-	//~ else {
-	//~ printf("   -	- ");
-	//~ }
-
-	//~ if(attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) {
-	//~ printf("%8" LIBSSH2_FILESIZE_MASK " ", attrs.filesize);
-	//~ }
-
-	//~ printf("%s\n", mem);
-	//~ }
-	//~ else if(rc == LIBSSH2_ERROR_EAGAIN) {
-	//~ /* blocking */
-	//~ fprintf(stderr, "Blocking\n");
-	//~ }
-	//~ else {
-	//~ break;
-	//~ }
 }
 
 uint8_t SftpHelper::get_filetype(DirItem_t* file)

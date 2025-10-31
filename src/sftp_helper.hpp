@@ -6,6 +6,8 @@
 
 namespace SftpHelper {
 
+constexpr uint16_t FILENAME_MAX_LEN = 512;
+
 int32_t connect(SftpWatch_t* ctx);
 int32_t auth(SftpWatch_t* ctx);
 int32_t open_dir(SftpWatch_t* ctx, const char* remote_path);
