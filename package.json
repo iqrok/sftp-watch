@@ -1,0 +1,23 @@
+{
+	"name": "@iqrok/sftp-watch",
+	"version": "0.1.0",
+	"files": [
+		"src/*.cc",
+		"src/*.cpp",
+		"src/*.hpp",
+		"src/*.h",
+		"lib/*.js",
+		"CMakeLists.txt"
+	],
+	"scripts": {
+		"compile": "cmake-js compile",
+		"clean": "cmake-js clean",
+		"rebuild": "cmake-js rebuild",
+		"postinstall": "npm run rebuild"
+	},
+	"main": "build/Release/sftp-watch.node",
+	"dependencies": {
+		"cmake-js": "^7.3.1",
+		"node-addon-api": "^8.5.0"
+	}
+}
