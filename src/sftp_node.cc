@@ -11,6 +11,7 @@ static uint32_t                         ids = 0;
 static std::map<uint32_t, SftpWatch_t*> watchers;
 
 static Napi::Value js_connect(const Napi::CallbackInfo& info);
+static Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
 
 static Napi::Value js_connect(const Napi::CallbackInfo& info)
 {
@@ -60,19 +61,19 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	if (arg.Has("path")) {
-		if (!arg.Get("path").IsString() || arg.Get("path").IsEmpty()) {
-			Napi::TypeError ::New(env, "'path' is empty")
-				.ThrowAsJavaScriptException();
-			return Napi::Boolean::New(env, false);
-		}
+	//~ if (arg.Has("path")) {
+	//~ if (!arg.Get("path").IsString() || arg.Get("path").IsEmpty()) {
+	//~ Napi::TypeError ::New(env, "'path' is empty")
+	//~ .ThrowAsJavaScriptException();
+	//~ return Napi::Boolean::New(env, false);
+	//~ }
 
-		path = arg.Get("path").As<Napi::String>().Utf8Value();
-	} else {
-		Napi::TypeError ::New(env, "'path' is undefined")
-			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
-	}
+	//~ path = arg.Get("path").As<Napi::String>().Utf8Value();
+	//~ } else {
+	//~ Napi::TypeError ::New(env, "'path' is undefined")
+	//~ .ThrowAsJavaScriptException();
+	//~ return Napi::Boolean::New(env, false);
+	//~ }
 
 	if (arg.Has("pubkey")) {
 		if (!arg.Get("pubkey").IsString() || arg.Get("pubkey").IsEmpty()) {
@@ -129,7 +130,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	ctx->host     = host;
 	ctx->port     = port;
 	ctx->username = username;
-	ctx->path     = path;
+	//~ ctx->path     = path;
 	ctx->pubkey   = pubkey;
 	ctx->privkey  = privkey;
 	ctx->password = password;
@@ -157,10 +158,64 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	return Napi::Number::New(env, ctx->id);
 }
 
+static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	if (info.Length() < 2) {
+		Napi::TypeError ::New(
+			env, "Invalid params. Should be <context_id, path>")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[0].IsNumber()) {
+		Napi::TypeError ::New(env, "Invalid context id. Should be a number")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[1].IsString()) {
+		Napi::TypeError ::New(env, "Invalid Remote Path. Should be a string")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[2].IsString()) {
+		Napi::TypeError ::New(env, "Invalid Local Path. Should be a string")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	const uint32_t    id          = info[0].As<Napi::Number>().Uint32Value();
+	const std::string remote_path = info[1].As<Napi::String>().Utf8Value();
+	const std::string local_path  = info[2].As<Napi::String>().Utf8Value();
+
+	SftpWatch_t* ctx = watchers.at(id);
+
+	int32_t rc = SftpHelper::open_dir(ctx, remote_path.c_str());
+
+	if (rc) {
+		Napi::TypeError ::New(env, "Failed to open directory")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	SftpHelper::DirItem_t item;
+	while ((rc = read_dir(ctx, &item))) {
+		fprintf(stdout, "[flags %02x] %s size: %u  modified at %u\n",
+			item.attrs.flags, item.name, item.attrs.filesize, item.attrs.mtime);
+	}
+
+	return Napi::Number::New(env, 1);
+}
+
 static Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 {
 	exports.Set(Napi::String::New(env, "connect"),
 		Napi::Function::New(env, js_connect));
+	exports.Set(
+		Napi::String::New(env, "sync"), Napi::Function::New(env, js_sync_dir));
 
 	return exports;
 }

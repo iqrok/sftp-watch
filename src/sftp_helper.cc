@@ -121,3 +121,67 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 
 	return 0;
 }
+
+int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
+{
+	do {
+		ctx->sftp_handle = libssh2_sftp_opendir(ctx->sftp_session, remote_path);
+
+		if (!ctx->sftp_handle
+			&& libssh2_session_last_errno(ctx->session)
+				!= LIBSSH2_ERROR_EAGAIN) {
+			fprintf(stderr, "Unable to open dir '%s' with SFTP\n", remote_path);
+			return -1;
+		}
+	} while (!ctx->sftp_handle);
+
+	return 0;
+}
+
+int32_t SftpHelper::read_dir(SftpWatch_t* ctx, SftpHelper::DirItem_t* file)
+{
+	int rc = 0;
+
+	while ((rc = libssh2_sftp_readdir(ctx->sftp_handle, file->name,
+				SftpHelper::filename_max_len, &file->attrs))
+		== LIBSSH2_ERROR_EAGAIN);
+
+	// either there's a record or should try again
+	if (rc > 0 || rc == LIBSSH2_ERROR_EAGAIN) return 1;
+
+	// read dir is finished
+	return 0;
+	//~ if(rc > 0) {
+	/* rc is the length of the file name in the mem
+	   buffer */
+
+	//~ if(attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
+	//~ /* this should check what permissions it
+	//~ is and print the output accordingly */
+	//~ printf("--fix----- ");
+	//~ }
+	//~ else {
+	//~ printf("---------- ");
+	//~ }
+
+	//~ if(attrs.flags & LIBSSH2_SFTP_ATTR_UIDGID) {
+	//~ printf("%4d %4d ", (int) attrs.uid, (int) attrs.gid);
+	//~ }
+	//~ else {
+	//~ printf("   -	- ");
+	//~ }
+
+	//~ if(attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) {
+	//~ printf("%8" LIBSSH2_FILESIZE_MASK " ", attrs.filesize);
+	//~ }
+
+	//~ printf("%s\n", mem);
+	//~ }
+	//~ else if(rc == LIBSSH2_ERROR_EAGAIN) {
+	//~ /* blocking */
+	//~ fprintf(stderr, "Blocking\n");
+	//~ }
+	//~ else {
+	//~ break;
+	//~ }
+}
