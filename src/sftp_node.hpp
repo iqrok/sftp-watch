@@ -18,22 +18,24 @@
 #	include <arpa/inet.h>
 #endif
 
-constexpr uint16_t filename_max_len = 512;
-
 enum FileType_e {
-	IS_INVALID = 0,
-	IS_SYMLINK,
-	IS_REG_FILE,
-	IS_DIR,
-	IS_CHR_FILE,
-	IS_BLK_FILE,
-	IS_PIPE,
-	IS_SOCK,
+	IS_INVALID  = '0',
+	IS_SYMLINK  = 'l',
+	IS_REG_FILE = 'f',
+	IS_DIR      = 'd',
+	IS_CHR_FILE = 'c',
+	IS_BLK_FILE = 'b',
+	IS_PIPE     = 'p',
+	IS_SOCK     = 's',
 };
 
-typedef struct DirItem_s {
+typedef struct DirItem_s DirItem_t;
+typedef struct SftpWatch_s SftpWatch_t;
+typedef std::map<std::string, DirItem_t> PairFileDet_t;
+
+struct DirItem_s {
 	uint8_t type = 0;
-	char    name[filename_max_len];
+	std::string name;
 
 	LIBSSH2_SFTP_ATTRIBUTES attrs;
 	/*
@@ -45,9 +47,9 @@ typedef struct DirItem_s {
 	 * LIBSSH2_SFTP_S_ISFIFO Test for a pipe or FIFO special file
 	 * LIBSSH2_SFTP_S_ISSOCK Test for a socket
 	 * */
-} DirItem_t;
+};
 
-typedef struct SftpWatch_s {
+struct SftpWatch_s {
 	uint32_t    id;
 	std::string host;
 	uint16_t    port;
@@ -55,6 +57,8 @@ typedef struct SftpWatch_s {
 	std::string privkey;
 	std::string username;
 	std::string password;
+	std::string remote_path;
+	std::string local_path;
 
 	libssh2_socket_t     sock;
 	LIBSSH2_SESSION*     session = NULL;
@@ -67,7 +71,7 @@ typedef struct SftpWatch_s {
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
 
-	std::map<std::string, DirItem_t> files;
+	PairFileDet_t last_files;
 
 	bool     is_stopped;
 	uint64_t delay_us = 1'000'000;
@@ -78,6 +82,6 @@ typedef struct SftpWatch_s {
 	{
 		// left empty intentionally
 	}
-} SftpWatch_t;
+};
 
 #endif

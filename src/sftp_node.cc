@@ -8,6 +8,11 @@
 #include "sftp_helper.hpp"
 #include "sftp_node.hpp"
 
+typedef struct NewAndRemovedFiles_s {
+	PairFileDet_t created;
+	PairFileDet_t removed;
+} NewAndRemovedFiles_t;
+
 static uint32_t                         ids = 0;
 static std::map<uint32_t, SftpWatch_t*> watchers;
 
@@ -30,39 +35,91 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 {
 	auto routine_cb
 		= [](Napi::Env env, Napi::Function js_cb,
-			SftpWatch_t* cb_ctx) {
-				Napi::Array collection = Napi::Array::New(env, cb_ctx->files.size());
-
+			NewAndRemovedFiles_t* files) {
 				uint32_t i = 0;
-				for (const auto& pair : cb_ctx->files) {
-					Napi::Array array = Napi::Array::New(env, 5);
-					DirItem_t item = pair.second;
-					array.Set(0U, Napi::String::New(env, pair.first));
-					//~ array.Set(0U, Napi::Number::New(env, 0));
-					array.Set(1U, Napi::Number::New(env, item.type));
-					array.Set(2U, Napi::Number::New(env, item.attrs.filesize));
-					array.Set(3U, Napi::Number::New(env, item.attrs.mtime));
-					array.Set(4U, Napi::Number::New(env, item.attrs.permissions));
+				Napi::Array created
+					= Napi::Array::New(env, files->created.size());
 
-					collection.Set(i++, array);
+				for (const auto& pair : files->created) {
+					DirItem_t item   = pair.second;
+					Napi::Object obj = Napi::Object::New(env);
+
+					obj.Set("name", Napi::String::New(env, pair.first));
+					obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
+					obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
+					obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
+					obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
+
+					created.Set(i++, obj);
 				}
+
+				i = 0;
+				Napi::Array removed
+					= Napi::Array::New(env, files->removed.size());
+
+				for (const auto& pair : files->removed) {
+					DirItem_t item   = pair.second;
+					Napi::Object obj = Napi::Object::New(env);
+
+					obj.Set("name", Napi::String::New(env, pair.first));
+					obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
+					obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
+					obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
+					obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
+
+					removed.Set(i++, obj);
+				}
+
+				Napi::Object collection = Napi::Object::New(env);
+				collection.Set("created", created);
+				collection.Set("removed", removed);
 
 				js_cb.Call({ collection });
 			};
 
-	//~ std::map<std::string, DirItem_t> files;
-	int32_t rc = 0;
-
 	while (!ctx->is_stopped) {
-		DirItem_t item;
-		while ((rc = SftpHelper::read_dir(ctx, &item))) {
-			ctx->files[std::string(item.name)] = item;
-			//~ fprintf(stdout, "[flags %02x - %d] %s size: %u  modified at %u\n",
-				//~ item.attrs.permissions, item.type, item.name, item.attrs.filesize,
-				//~ item.attrs.mtime);
+		NewAndRemovedFiles_t list;
+		PairFileDet_t        current;
+		DirItem_t            item;
+
+		// open remote dir first
+		int32_t rc = SftpHelper::open_dir(ctx, ctx->remote_path.c_str());
+		if (rc) {
+			fprintf(stderr, "Failed to open path\n");
+			break;
 		}
 
-		if (ctx->tsfn.NonBlockingCall(ctx, routine_cb) != napi_ok) {
+		// read the opened directory
+		while ((rc = SftpHelper::read_dir(ctx, &item)) != 0) {
+			current[std::string(item.name)] = item;
+		}
+
+		// Check for new or modified files
+		for (const auto& [key, now] : current) {
+			if (now.name == "." || now.name == "..") continue;
+
+			if (!ctx->last_files.contains(key)) {
+				list.created[key] = now;
+				continue;
+			}
+
+			DirItem_t old = ctx->last_files[key];
+			if (old.attrs.filesize != now.attrs.filesize
+				|| old.attrs.mtime != now.attrs.mtime) {
+
+				list.created[key] = now;
+			}
+		}
+
+		// check for deleted files
+		for (const auto& [key, value] : ctx->last_files) {
+			if (!current.contains(key)) list.removed[key] = value;
+		}
+
+		// update last data
+		ctx->last_files = current;
+
+		if (ctx->tsfn.NonBlockingCall(&list, routine_cb) != napi_ok) {
 			Napi::Error::Fatal("thread_si", "NonBlockingCall() failed");
 		}
 
@@ -88,6 +145,8 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	std::string pubkey;
 	std::string privkey;
 	std::string password;
+	std::string remote_path;
+	std::string local_path;
 
 	if (arg.Has("host")) {
 		if (!arg.Get("host").IsString() || arg.Get("host").IsEmpty()) {
@@ -115,6 +174,30 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		Napi::TypeError::New(env, "'username' is undefined")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
+	}
+
+	if (arg.Has("remote_path")) {
+		if (!arg.Get("remote_path").IsString() || arg.Get("remote_path").IsEmpty()) {
+			Napi::TypeError::New(env, "'remote_path' is empty")
+				.ThrowAsJavaScriptException();
+			return Napi::Boolean::New(env, false);
+		}
+
+		remote_path = arg.Get("remote_path").As<Napi::String>().Utf8Value();
+	} else {
+		Napi::TypeError::New(env, "'remote_path' is undefined")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (arg.Has("local_path")) {
+		if (!arg.Get("local_path").IsString() || arg.Get("local_path").IsEmpty()) {
+			Napi::TypeError::New(env, "'local_path' is empty")
+				.ThrowAsJavaScriptException();
+			return Napi::Boolean::New(env, false);
+		}
+
+		local_path = arg.Get("local_path").As<Napi::String>().Utf8Value();
 	}
 
 	if (arg.Has("pubkey")) {
@@ -169,12 +252,14 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 
 	SftpWatch_t* ctx = new SftpWatch_t(env, ++ids);
 
-	ctx->host     = host;
-	ctx->port     = port;
-	ctx->username = username;
-	ctx->pubkey   = pubkey;
-	ctx->privkey  = privkey;
-	ctx->password = password;
+	ctx->host        = host;
+	ctx->port        = port;
+	ctx->username    = username;
+	ctx->pubkey      = pubkey;
+	ctx->privkey     = privkey;
+	ctx->password    = password;
+	ctx->remote_path = remote_path;
+	ctx->local_path  = local_path;
 
 	if (SftpHelper::connect(ctx)) {
 		Napi::TypeError::New(env, "Can't connect to sftp server!")
@@ -240,13 +325,6 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 	Napi::Function    js_cb       = info[3].As<Napi::Function>();
 
 	SftpWatch_t* ctx = watchers.at(id);
-	int32_t      rc  = SftpHelper::open_dir(ctx, remote_path.c_str());
-
-	if (rc) {
-		Napi::TypeError::New(env, "Failed to open directory")
-			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
-	}
 
 	ctx->is_stopped = false;
 	ctx->tsfn = Napi::ThreadSafeFunction::New(
