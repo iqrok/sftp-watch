@@ -194,8 +194,7 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 		ctx->sftp_handle = libssh2_sftp_opendir(ctx->sftp_session, remote_path);
 
 		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			fprintf(stderr, "Unable to open dir '%s' with SFTP\n",
-				remote_path);
+			fprintf(stderr, "Unable to open dir '%s' with SFTP\n", remote_path);
 			return -1;
 		}
 	} while (!ctx->sftp_handle);
@@ -383,8 +382,8 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 	std::string local_file = ctx->local_path + std::string("/") + filename;
 
 	if (remove(local_file.c_str())) {
-		fprintf(stderr, "Err %d: %s '%s'\n",
-			errno, strerror(errno), local_file.c_str());
+		fprintf(stderr, "Err %d: %s '%s'\n", errno, strerror(errno),
+			local_file.c_str());
 		return -1;
 	}
 

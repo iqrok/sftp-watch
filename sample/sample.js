@@ -6,7 +6,7 @@ try {
 
 	if (!connect) throw 'Failed to connect to SFTP Server';
 
-	SftpWatch.sync(connect, '/tmp/test', '/tmp', (list) => {
+	SftpWatch.sync(connect, (list) => {
 			if (list.created.length > 0) {
 				console.log('New or Updated File(s)');
 				console.table(list.created);

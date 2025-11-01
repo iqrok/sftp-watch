@@ -300,9 +300,9 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
-	if (info.Length() < 3) {
+	if (info.Length() < 2) {
 		Napi::TypeError::New(
-			env, "Invalid params. Should be <context_id, path>")
+			env, "Invalid params. Should be <context_id, callback>")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
@@ -313,28 +313,14 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	if (!info[1].IsString()) {
-		Napi::TypeError::New(env, "Invalid Remote Path. Should be a string")
-			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
-	}
-
-	if (!info[2].IsString()) {
-		Napi::TypeError::New(env, "Invalid Local Path. Should be a string")
-			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
-	}
-
-	if (!info[3].IsFunction()) {
+	if (!info[1].IsFunction()) {
 		Napi::TypeError::New(env, "Invalid Callback Function")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
 
-	const uint32_t    id          = info[0].As<Napi::Number>().Uint32Value();
-	const std::string remote_path = info[1].As<Napi::String>().Utf8Value();
-	const std::string local_path  = info[2].As<Napi::String>().Utf8Value();
-	Napi::Function    js_cb       = info[3].As<Napi::Function>();
+	const uint32_t id    = info[0].As<Napi::Number>().Uint32Value();
+	Napi::Function js_cb = info[1].As<Napi::Function>();
 
 	SftpWatch_t* ctx = watchers.at(id);
 
