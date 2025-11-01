@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <thread>
@@ -22,13 +23,12 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
 static void finalizer_sync_dir(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
-	uint32_t id = ctx->id;
+	watchers.erase(ctx->id);
 
 	ctx->thread.join();
 	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 
 	delete ctx;
-	watchers.erase(id);
 }
 
 static void sync_dir_tsfn_cb(
@@ -93,19 +93,19 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		}
 
 		// Check for new or modified files
-		for (const auto& [key, now] : current) {
+		for (const auto& [key, val] : current) {
+			DirItem_t now = val;
+			DirItem_t old = ctx->last_files[key];
+
 			if (now.name == "." || now.name == "..") continue;
 
-			if (!ctx->last_files.contains(key)) {
-				list.created[key] = now;
-				continue;
-			}
+			bool is_new = !ctx->last_files.contains(key)
+				|| old.attrs.filesize != now.attrs.filesize
+				|| old.attrs.mtime != now.attrs.mtime;
 
-			DirItem_t old = ctx->last_files[key];
-			if (old.attrs.filesize != now.attrs.filesize
-				|| old.attrs.mtime != now.attrs.mtime) {
-
+			if (is_new) {
 				list.created[key] = now;
+				SftpHelper::sync_remote(ctx, &now);
 			}
 		}
 
@@ -121,8 +121,11 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			Napi::Error::Fatal("thread_si", "NonBlockingCall() failed");
 		}
 
-		usleep(ctx->delay_us);
+		std::this_thread::sleep_for(std::chrono::microseconds(ctx->delay_us));
 	}
+
+	// outside loop means no more operation to do. Cleanup the connection
+	SftpHelper::cleanup(ctx);
 }
 
 static Napi::Value js_connect(const Napi::CallbackInfo& info)

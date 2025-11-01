@@ -18,6 +18,14 @@
 #	include <arpa/inet.h>
 #endif
 
+#ifndef SFTP_READ_BUFFER_SIZE
+#	define SFTP_READ_BUFFER_SIZE 2048
+#endif
+
+#ifndef SFTP_FILENAME_MAX_LEN
+#	define SFTP_FILENAME_MAX_LEN 512
+#endif
+
 enum FileType_e {
 	IS_INVALID  = '0',
 	IS_SYMLINK  = 'l',

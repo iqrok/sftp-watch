@@ -6,12 +6,13 @@
 
 namespace SftpHelper {
 
-constexpr uint16_t FILENAME_MAX_LEN = 512;
-
 int32_t connect(SftpWatch_t* ctx);
+void    cleanup(SftpWatch_t* ctx);
 int32_t auth(SftpWatch_t* ctx);
 int32_t open_dir(SftpWatch_t* ctx, const char* remote_path);
 int32_t read_dir(SftpWatch_t* ctx, DirItem_t* file);
+int32_t sync_remote(SftpWatch_t* ctx, DirItem_t* file);
+int32_t remove_local(SftpWatch_t* ctx, DirItem_t* file);
 uint8_t get_filetype(DirItem_t* file);
 
 }
