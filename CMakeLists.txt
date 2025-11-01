@@ -25,10 +25,11 @@ set(INC_DIR "${SRC_DIR}/include")
 
 if (NOT "$ENV{SFTP_READ_BUFFER_SIZE}" STREQUAL "")
 	set(SFTP_READ_BUFFER_SIZE "$ENV{SFTP_READ_BUFFER_SIZE}")
-	message("SFTP_READ_BUFFER_SIZE: ${SFTP_READ_BUFFER_SIZE} bytes")
 endif ()
-#~ add_definitions(-DNAPI_VERSION=6 -DNAPI_CPP_EXCEPTIONS)
-#~ add_definitions(-DNAPI_VERSION=6 -DNAPI_DISABLE_CPP_EXCEPTIONS)
+
+if (NOT "$ENV{SFTP_FILENAME_MAX_LEN}" STREQUAL "")
+	set(SFTP_FILENAME_MAX_LEN "$ENV{SFTP_FILENAME_MAX_LEN}")
+endif ()
 
 add_library("${PROJECT_NAME}"
 	SHARED
@@ -57,24 +58,29 @@ if (DEFINED SFTP_READ_BUFFER_SIZE)
 		PRIVATE SFTP_READ_BUFFER_SIZE=${SFTP_READ_BUFFER_SIZE})
 endif ()
 
+if (DEFINED SFTP_FILENAME_MAX_LEN)
+	target_compile_definitions("${PROJECT_NAME}"
+		PRIVATE SFTP_FILENAME_MAX_LEN=${SFTP_FILENAME_MAX_LEN})
+endif ()
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	target_compile_options("${PROJECT_NAME}"
 		PRIVATE
-			-W4
-			#~ -wd4710  # suppress failed inlining
-			#~ -wd4711  # suppress failed inlining
-			-O2
-			-EHsc)
+			#~ -EHsc # enable exception
+			-W4   # equivalent of -Wall
+			-O2)
 
 	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	target_compile_options("${PROJECT_NAME}"
 		PRIVATE
+			#~ -fexceptions # enable exception
 			-Wall
+			-Wextra
 			-Wfatal-errors
+			-Wpedantic
 			-O2
-			-fexceptions
-			-Wpedantic)
+		)
 else ()
 	message(FATAL_ERROR "Unknown Environment")
 endif ()
@@ -107,29 +113,10 @@ else ()
 endif ()
 
 if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
-	message(STATUS "USING USER PROVIDED LIBSSH2")
-
-	set(LIBSSH2_LA "/home/cadaver/Documents/misc/curl-x86_64/lib/libssh2.la")
-	file(READ "${LIBSSH2_LA}" LIBSSH2_LA_CONTENTS)
-	if (LIBSSH2_LA_CONTENTS MATCHES "dependency_libs*=*'([^']*)'")
-		string(STRIP "${CMAKE_MATCH_1}" DEPENDENCY_LIBS_STR)
-		string(REGEX REPLACE " +" ";" DEPENDENCY_LIBS "${LIBSSH2_LA_DEPENDENCY_LIBS_STR}")
-	else()
-		message(WARNING "${LIBSSH2_LA} does not declare dependencies.")
-	endif()
-
-	message("YUUUUUO: ${LIBSSH2_LA_DEPENDENCY_LIBS_STR}")
-
-	#~ target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
-	target_link_libraries("${PROJECT_NAME}"
-		PRIVATE
-			"/home/cadaver/Documents/misc/curl-x86_64/lib/libssh2.a"
-			${LIBSSH2_LA_DEPENDENCY_LIBS_STR}
-			)
-
+	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{LIBSSH2_DIR}")
 else ()
-	find_package(libssh2)
+	find_package(libssh2 QUIET)
 
 	if (${libssh2_FOUND})
 		target_link_libraries("${PROJECT_NAME}"
