@@ -23,6 +23,7 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
 static void finalizer_sync_dir(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
+	(void)finalizeData; // unused. btw it's a nullptr
 	watchers.erase(ctx->id);
 
 	ctx->thread.join();
