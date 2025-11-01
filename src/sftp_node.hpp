@@ -18,8 +18,9 @@
 #	include <arpa/inet.h>
 #endif
 
+// default to 30000, as it is the value of max SFTP Packet
 #ifndef SFTP_READ_BUFFER_SIZE
-#	define SFTP_READ_BUFFER_SIZE 2048
+#	define SFTP_READ_BUFFER_SIZE 30000
 #endif
 
 #ifndef SFTP_FILENAME_MAX_LEN
