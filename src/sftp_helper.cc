@@ -311,30 +311,23 @@ int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
 		return -2;
 	}
 
+	// connection loop, check if socket is ready
 	do {
 		int32_t nread = 0;
 
+		// remote read loop, loop until failed or no remaining bytes
 		do {
 			char mem[SFTP_READ_BUFFER_SIZE];
 
-			/* read in a loop until we block */
 			nread = libssh2_sftp_read(handle, mem, sizeof(mem));
 			if (nread > 0) fwrite(mem, (size_t)nread, 1, fd_local);
+
 		} while (nread > 0);
 
 		// error or end of file
-		if (nread != LIBSSH2_ERROR_EAGAIN) {
-			// set modification time for local file to match the remote one
-			struct utimbuf times = {
-				.actime  = (time_t)file->attrs.atime,
-				.modtime = (time_t)file->attrs.mtime,
-			};
+		if (nread != LIBSSH2_ERROR_EAGAIN) break;
 
-			utime(local_file.c_str(), &times);
-
-			break;
-		}
-
+		// this block is to wait for socket to be ready. Copied from example
 		struct timeval timeout;
 		fd_set         fd;
 		fd_set         fd2;
@@ -360,13 +353,27 @@ int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
 			/* negative is error, 0 is timeout */
 			fprintf(stderr, "SFTP download timed out: %d\n", rc);
 
+			// -3 is timeout, -1 is error.
+			// FIXME: Should use enum instead this magic number
 			err = rc == 0 ? -3 : -1;
 			break;
 		}
 	} while (1);
 
+	// close both sftp and file handle
 	libssh2_sftp_close(handle);
 	fclose(fd_local);
+
+	// set modification time for local file to match the remote one
+	// this must be done AFTER CLOSING the file handle
+	struct utimbuf times = {
+		.actime  = (time_t)file->attrs.atime,
+		.modtime = (time_t)file->attrs.mtime,
+	};
+
+	if (utime(local_file.c_str(), &times)) {
+		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
+	}
 
 	return err;
 }
