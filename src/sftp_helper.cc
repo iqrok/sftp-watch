@@ -377,3 +377,16 @@ int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 	return err;
 }
+
+int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
+{
+	std::string local_file = ctx->local_path + std::string("/") + filename;
+
+	if (remove(local_file.c_str())) {
+		fprintf(stderr, "Err %d: %s '%s'\n",
+			errno, strerror(errno), local_file.c_str());
+		return -1;
+	}
+
+	return 0;
+}

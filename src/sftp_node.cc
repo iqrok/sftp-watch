@@ -107,7 +107,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 				list.created[key] = now;
 
 				// only write regular file
-				if (now->type == IS_REG_FILE) {
+				if (now.type == IS_REG_FILE) {
 					SftpHelper::sync_remote(ctx, &now);
 				}
 
@@ -116,8 +116,11 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		}
 
 		// check for deleted files
-		for (const auto& [key, value] : ctx->last_files) {
-			if (!current.contains(key)) list.removed[key] = value;
+		for (const auto& [key, val] : ctx->last_files) {
+			if (!current.contains(key)) {
+				SftpHelper::remove_local(ctx, val.name);
+				list.removed[key] = val;
+			}
 		}
 
 		// update last data
