@@ -105,7 +105,13 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 			if (is_new) {
 				list.created[key] = now;
-				SftpHelper::sync_remote(ctx, &now);
+
+				// only write regular file
+				if (now->type == IS_REG_FILE) {
+					SftpHelper::sync_remote(ctx, &now);
+				}
+
+				// TODO: sync directory and its tree, until reached max depth
 			}
 		}
 
