@@ -23,6 +23,10 @@ project(sftp-watch
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(INC_DIR "${SRC_DIR}/include")
 
+if (NOT "$ENV{SFTP_READ_BUFFER_SIZE}" STREQUAL "")
+	set(SFTP_READ_BUFFER_SIZE "$ENV{SFTP_READ_BUFFER_SIZE}")
+	message("SFTP_READ_BUFFER_SIZE: ${SFTP_READ_BUFFER_SIZE} bytes")
+endif ()
 #~ add_definitions(-DNAPI_VERSION=6 -DNAPI_CPP_EXCEPTIONS)
 #~ add_definitions(-DNAPI_VERSION=6 -DNAPI_DISABLE_CPP_EXCEPTIONS)
 
@@ -47,6 +51,11 @@ target_compile_definitions("${PROJECT_NAME}"
 	PRIVATE
 		NAPI_DISABLE_CPP_EXCEPTIONS
 		NAPI_VERSION=6)
+
+if (DEFINED SFTP_READ_BUFFER_SIZE)
+	target_compile_definitions("${PROJECT_NAME}"
+		PRIVATE SFTP_READ_BUFFER_SIZE=${SFTP_READ_BUFFER_SIZE})
+endif ()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 	target_compile_options("${PROJECT_NAME}"
