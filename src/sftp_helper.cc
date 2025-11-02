@@ -106,6 +106,9 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		return rc;
 	}
 
+	// NOTE: always forgot this. FREE getaddrinfo res AFTER USE
+	freeaddrinfo(res);
+
 	/* Create a session instance */
 	ctx->session = libssh2_session_init();
 	if (!ctx->session) {
@@ -153,6 +156,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 	 *
 	 * `valid = (!pubkey.empty() && !privkey.empty()) || !password.empty()`
 	 * */
+
 	if (!ctx->pubkey.empty() && !ctx->privkey.empty()) {
 		while ((rc = libssh2_userauth_publickey_fromfile(ctx->session,
 					ctx->username.c_str(), ctx->pubkey.c_str(),
@@ -160,7 +164,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			== LIBSSH2_ERROR_EAGAIN);
 
 		if (rc) {
-			fprintf(stderr, "Authentication by public key failed.\n");
+			fprintf(stderr, "Authentication by public key failed %d.\n", rc);
 			return -1;
 		}
 	} else if (!ctx->password.empty()) {
@@ -169,7 +173,8 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			== LIBSSH2_ERROR_EAGAIN);
 
 		if (rc) {
-			fprintf(stderr, "Authentication by password failed.\n");
+			fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
+				ctx->username.c_str());
 			return -1;
 		}
 	} else {
@@ -196,13 +201,14 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 
 		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
 			char* errmsg;
-
-			int errcode
+			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
+
 			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n",
 				remote_path, errcode,
 				errmsg ? errmsg : "Unknown error message");
-			return -1;
+
+			return errcode;
 		}
 	} while (!ctx->sftp_handle);
 
