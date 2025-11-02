@@ -64,13 +64,12 @@ if (DEFINED SFTP_FILENAME_MAX_LEN)
 endif ()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
 	target_compile_options("${PROJECT_NAME}"
 		PRIVATE
 			#~ -EHsc # enable exception
 			-W4   # equivalent of -Wall
 			-O2)
-
-	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	target_compile_options("${PROJECT_NAME}"
 		PRIVATE
@@ -83,6 +82,12 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL
 		)
 else ()
 	message(FATAL_ERROR "Unknown Environment")
+endif ()
+
+if (BUILD_STATIC_LINK)
+	set(ZLIB_USE_STATIC_LIBS ON)
+	set(OPENSSL_USE_STATIC_LIBS ON)
+	set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".lib")
 endif ()
 
 # pthread
@@ -115,20 +120,14 @@ endif ()
 if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
 	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{LIBSSH2_DIR}")
+	message("Using provided libssh2 from env variable")
 else ()
-	find_package(libssh2 QUIET)
+	find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2)
+	find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h)
 
-	if (${libssh2_FOUND})
-		target_link_libraries("${PROJECT_NAME}"
-			PRIVATE libssh2::libssh2)
-	else ()
-		find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2)
-		find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h)
+	target_link_libraries("${PROJECT_NAME}"
+		PRIVATE "${LIBSSH2_LIBRARY}")
 
-		target_link_libraries("${PROJECT_NAME}"
-			PRIVATE "${LIBSSH2_LIBRARY}")
-
-		target_include_directories("${PROJECT_NAME}"
-			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
-	endif ()
+	target_include_directories("${PROJECT_NAME}"
+		PRIVATE "${LIBSSH2_INCLUDE_DIR}")
 endif ()
