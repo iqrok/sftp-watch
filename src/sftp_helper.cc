@@ -115,6 +115,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 
 	/* Since we have set non-blocking, tell libssh2 we are non-blocking */
 	libssh2_session_set_blocking(ctx->session, 0);
+	libssh2_session_set_timeout(ctx->session, ctx->timeout_sec);
 
 	while ((rc = libssh2_session_handshake(ctx->session, ctx->sock))
 		== LIBSSH2_ERROR_EAGAIN);
@@ -194,7 +195,10 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 		ctx->sftp_handle = libssh2_sftp_opendir(ctx->sftp_session, remote_path);
 
 		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			fprintf(stderr, "Unable to open dir '%s' with SFTP\n", remote_path);
+			char* errmsg;
+
+			int errcode = libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
+			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n", remote_path, errcode, errmsg ? errmsg : "Unknown error message");
 			return -1;
 		}
 	} while (!ctx->sftp_handle);
@@ -250,7 +254,7 @@ uint8_t SftpHelper::get_filetype(DirItem_t* file)
 	}
 }
 
-void SftpHelper::cleanup(SftpWatch_t* ctx)
+void SftpHelper::disconnect(SftpWatch_t* ctx)
 {
 	libssh2_sftp_close(ctx->sftp_handle);
 	libssh2_sftp_shutdown(ctx->sftp_session);
@@ -264,12 +268,17 @@ void SftpHelper::cleanup(SftpWatch_t* ctx)
 		shutdown(ctx->sock, 2);
 		LIBSSH2_SOCKET_CLOSE(ctx->sock);
 	}
+}
 
+void SftpHelper::deinit()
+{
 	libssh2_exit();
 
 #ifdef _WIN32
 	WSACleanup();
 #endif
+
+	is_inited = false;
 }
 
 int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
