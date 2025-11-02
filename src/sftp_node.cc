@@ -9,13 +9,19 @@
 #include "sftp_helper.hpp"
 #include "sftp_node.hpp"
 
-#define DELAY_US(us) std::this_thread::sleep_for(std::chrono::microseconds((us)))
-#define DELAY_MS(ms) std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
+#define DELAY_US(us)                                                           \
+	std::this_thread::sleep_for(std::chrono::microseconds((us)))
+#define DELAY_MS(ms)                                                           \
+	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
 
-typedef struct NewAndRemovedFiles_s {
-	PairFileDet_t created;
-	PairFileDet_t removed;
-} NewAndRemovedFiles_t;
+#define EVT_NAME_DEL "del"
+#define EVT_NAME_NEW "new"
+#define EVT_NAME_MOD "mod"
+
+typedef struct EvtFile_s {
+	const char* name;
+	DirItem_t*  file;
+} EvtFile_t;
 
 static uint32_t                         ids = 0;
 static std::map<uint32_t, SftpWatch_t*> watchers;
@@ -48,60 +54,33 @@ static void finalizer_sync_dir(
 }
 
 static void sync_dir_tsfn_cb(
-	Napi::Env env, Napi::Function js_cb, NewAndRemovedFiles_t* files)
+	Napi::Env env, Napi::Function js_cb, EvtFile_t* item)
 {
-	Napi::Array created = Napi::Array::New(env, files->created.size());
+	Napi::Object obj = Napi::Object::New(env);
 
-	uint32_t idx = 0;
-	for (const auto& pair : files->created) {
-		DirItem_t    item = pair.second;
-		Napi::Object obj  = Napi::Object::New(env);
+	obj.Set("evt", Napi::String::New(env, item->name));
+	obj.Set("name", Napi::String::New(env, item->file->name));
+	obj.Set("type", Napi::String::New(env, std::string(1, item->file->type)));
+	obj.Set("size", Napi::Number::New(env, item->file->attrs.filesize));
+	obj.Set("time", Napi::Number::New(env, item->file->attrs.mtime * 1e3));
+	obj.Set("perm", Napi::Number::New(env, item->file->attrs.permissions));
 
-		obj.Set("name", Napi::String::New(env, pair.first));
-		obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
-		obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
-		obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
-		obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
-
-		created.Set(idx++, obj);
-	}
-
-	Napi::Array removed = Napi::Array::New(env, files->removed.size());
-
-	idx = 0;
-	for (const auto& pair : files->removed) {
-		DirItem_t    item = pair.second;
-		Napi::Object obj  = Napi::Object::New(env);
-
-		obj.Set("name", Napi::String::New(env, pair.first));
-		obj.Set("type", Napi::String::New(env, std::string(1, item.type)));
-		obj.Set("size", Napi::Number::New(env, item.attrs.filesize));
-		obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
-		obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
-
-		removed.Set(idx++, obj);
-	}
-
-	Napi::Object collection = Napi::Object::New(env);
-	collection.Set("created", created);
-	collection.Set("removed", removed);
-
-	js_cb.Call({ collection });
+	js_cb.Call({ obj });
 }
 
 static void thread_sync_dir(SftpWatch_t* ctx)
 {
 	while (!ctx->is_stopped) {
-		NewAndRemovedFiles_t list;
-		PairFileDet_t        current;
-		DirItem_t            item;
+		PairFileDet_t current;
+		DirItem_t     item;
+		EvtFile_t     sync_evt;
 
 		// open remote dir first
 		int32_t rc = SftpHelper::open_dir(ctx, ctx->remote_path.c_str());
 		if (rc) {
 			fprintf(stderr, "Failed to open path\n");
 
-			if (++ctx->err_count > ctx->max_err_count) {
+			if (++ctx->err_count >= ctx->max_err_count) {
 				connect_or_reconnect(ctx);
 				ctx->err_count = 0;
 				continue;
@@ -120,44 +99,61 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 		// Check for new or modified files
 		for (const auto& [key, val] : current) {
-			DirItem_t now = val;
-			DirItem_t old = ctx->last_files[key];
+			if (val.name == "." || val.name == "..") continue;
 
-			if (now.name == "." || now.name == "..") continue;
+			DirItem_t* now = &current[key];
+			DirItem_t* old = ctx->last_files.contains(key)
+				? &ctx->last_files[key]
+				: nullptr;
 
-			bool is_new = !ctx->last_files.contains(key)
-				|| old.attrs.filesize != now.attrs.filesize
-				|| old.attrs.mtime != now.attrs.mtime;
+			bool is_mod = false;
+			bool is_new = old == nullptr;
 
-			if (is_new) {
-				list.created[key] = now;
+			if (!is_new) {
+				is_mod = (old->attrs.filesize != now->attrs.filesize
+					|| old->attrs.mtime != now->attrs.mtime);
+			}
 
+			if (is_new || is_mod) {
 				// only write regular file
-				if (now.type == IS_REG_FILE) {
+				if (now->type == IS_REG_FILE) {
 					// TODO: multiple files at once with single connection
-					SftpHelper::sync_remote(ctx, &now);
+					SftpHelper::sync_remote(ctx, now);
+				}
+
+				sync_evt.name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
+				sync_evt.file = now;
+
+				// BlockingCall() should never fail, since max queue size is 0
+				napi_status call
+					= ctx->tsfn.BlockingCall(&sync_evt, sync_dir_tsfn_cb);
+				if (call != napi_ok) {
+					Napi::Error::Fatal("new file err", "BlockingCall() failed");
 				}
 
 				// TODO: sync directory and its tree, until reached max depth
 			}
 		}
 
-		// check for deleted files
 		for (const auto& [key, val] : ctx->last_files) {
-			if (!current.contains(key)) {
-				SftpHelper::remove_local(ctx, val.name);
-				list.removed[key] = val;
+			if (current.contains(key)) continue;
+
+			DirItem_t old = val;
+
+			sync_evt.name = EVT_NAME_DEL;
+			sync_evt.file = &old;
+
+			SftpHelper::remove_local(ctx, old.name);
+
+			napi_status call
+				= ctx->tsfn.BlockingCall(&sync_evt, sync_dir_tsfn_cb);
+			if (call != napi_ok) {
+				Napi::Error::Fatal("del file err", "BlockingCall() failed");
 			}
 		}
 
 		// update last data
 		ctx->last_files = current;
-
-		// BlockingCall() should never fail, since max queue size is 0
-		// ref: https://github.com/nodejs/node-addon-api/blob/main/doc/threadsafe_function.md#blockingcall--nonblockingcall
-		if (ctx->tsfn.BlockingCall(&list, sync_dir_tsfn_cb) != napi_ok) {
-			Napi::Error::Fatal("watcher_tsfn", "BlockingCall() failed");
-		}
 
 		DELAY_MS(ctx->delay_ms);
 	}
@@ -277,8 +273,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	SftpWatch_t* ctx = new SftpWatch_t(env, ++ids);
-
+	SftpWatch_t* ctx  = new SftpWatch_t(env, ++ids);
 	ctx->host         = host;
 	ctx->username     = username;
 	ctx->pubkey       = pubkey;
@@ -291,7 +286,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
 		uint32_t tmp = arg.Get("port").As<Napi::Number>().Uint32Value();
-		ctx->port = static_cast<uint16_t>(tmp);
+		ctx->port    = static_cast<uint16_t>(tmp);
 	}
 
 	if (arg.Has("delayMs")) {

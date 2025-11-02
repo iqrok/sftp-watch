@@ -197,8 +197,11 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
 			char* errmsg;
 
-			int errcode = libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
-			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n", remote_path, errcode, errmsg ? errmsg : "Unknown error message");
+			int errcode
+				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
+			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n",
+				remote_path, errcode,
+				errmsg ? errmsg : "Unknown error message");
 			return -1;
 		}
 	} while (!ctx->sftp_handle);
