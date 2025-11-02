@@ -60,8 +60,9 @@ struct DirItem_s {
 
 struct SftpWatch_s {
 	uint32_t    id;
-	std::string host;
+	int16_t     timeout_sec = 60U;
 	uint16_t    port;
+	std::string host;
 	std::string pubkey;
 	std::string privkey;
 	std::string username;
@@ -69,8 +70,12 @@ struct SftpWatch_s {
 	std::string remote_path;
 	std::string local_path;
 
+	bool    is_connected  = false;
+	uint8_t err_count     = 0;
+	uint8_t max_err_count = 3;
+
 	libssh2_socket_t     sock;
-	LIBSSH2_SESSION*     session = NULL;
+	LIBSSH2_SESSION*     session;
 	LIBSSH2_SFTP*        sftp_session;
 	LIBSSH2_SFTP_HANDLE* sftp_handle;
 	struct sockaddr_in   sin;
@@ -83,7 +88,7 @@ struct SftpWatch_s {
 	PairFileDet_t last_files;
 
 	bool     is_stopped;
-	uint64_t delay_us = 1'000'000;
+	uint32_t delay_ms = 1000;
 
 	SftpWatch_s(Napi::Env env, uint32_t qid)
 		: id(qid)

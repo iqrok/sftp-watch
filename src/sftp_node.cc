@@ -9,6 +9,9 @@
 #include "sftp_helper.hpp"
 #include "sftp_node.hpp"
 
+#define DELAY_US(us) std::this_thread::sleep_for(std::chrono::microseconds((us)))
+#define DELAY_MS(ms) std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
+
 typedef struct NewAndRemovedFiles_s {
 	PairFileDet_t created;
 	PairFileDet_t removed;
@@ -20,6 +23,16 @@ static std::map<uint32_t, SftpWatch_t*> watchers;
 static Napi::Value js_connect(const Napi::CallbackInfo& info);
 static Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
 
+static int32_t connect_or_reconnect(SftpWatch_t* ctx)
+{
+	if (ctx->is_connected) SftpHelper::disconnect(ctx);
+
+	if (SftpHelper::connect(ctx)) return -1;
+	if (SftpHelper::auth(ctx)) return -2;
+
+	return 0;
+}
+
 static void finalizer_sync_dir(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
@@ -30,14 +43,16 @@ static void finalizer_sync_dir(
 	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 
 	delete ctx;
+
+	if (watchers.empty()) SftpHelper::deinit();
 }
 
 static void sync_dir_tsfn_cb(
 	Napi::Env env, Napi::Function js_cb, NewAndRemovedFiles_t* files)
 {
-	uint32_t    i       = 0;
 	Napi::Array created = Napi::Array::New(env, files->created.size());
 
+	uint32_t idx = 0;
 	for (const auto& pair : files->created) {
 		DirItem_t    item = pair.second;
 		Napi::Object obj  = Napi::Object::New(env);
@@ -48,12 +63,12 @@ static void sync_dir_tsfn_cb(
 		obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
 		obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
 
-		created.Set(i++, obj);
+		created.Set(idx++, obj);
 	}
 
-	i                   = 0;
 	Napi::Array removed = Napi::Array::New(env, files->removed.size());
 
+	idx = 0;
 	for (const auto& pair : files->removed) {
 		DirItem_t    item = pair.second;
 		Napi::Object obj  = Napi::Object::New(env);
@@ -64,7 +79,7 @@ static void sync_dir_tsfn_cb(
 		obj.Set("time", Napi::Number::New(env, item.attrs.mtime));
 		obj.Set("perm", Napi::Number::New(env, item.attrs.permissions));
 
-		removed.Set(i++, obj);
+		removed.Set(idx++, obj);
 	}
 
 	Napi::Object collection = Napi::Object::New(env);
@@ -85,8 +100,18 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		int32_t rc = SftpHelper::open_dir(ctx, ctx->remote_path.c_str());
 		if (rc) {
 			fprintf(stderr, "Failed to open path\n");
-			break;
+
+			if (++ctx->err_count > ctx->max_err_count) {
+				connect_or_reconnect(ctx);
+				ctx->err_count = 0;
+				continue;
+			}
+
+			DELAY_MS(ctx->delay_ms);
+			continue;
 		}
+
+		ctx->err_count = 0;
 
 		// read the opened directory
 		while ((rc = SftpHelper::read_dir(ctx, &item)) != 0) {
@@ -109,6 +134,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 				// only write regular file
 				if (now.type == IS_REG_FILE) {
+					// TODO: multiple files at once with single connection
 					SftpHelper::sync_remote(ctx, &now);
 				}
 
@@ -127,15 +153,17 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		// update last data
 		ctx->last_files = current;
 
-		if (ctx->tsfn.NonBlockingCall(&list, sync_dir_tsfn_cb) != napi_ok) {
-			Napi::Error::Fatal("thread_si", "NonBlockingCall() failed");
+		// BlockingCall() should never fail, since max queue size is 0
+		// ref: https://github.com/nodejs/node-addon-api/blob/main/doc/threadsafe_function.md#blockingcall--nonblockingcall
+		if (ctx->tsfn.BlockingCall(&list, sync_dir_tsfn_cb) != napi_ok) {
+			Napi::Error::Fatal("watcher_tsfn", "BlockingCall() failed");
 		}
 
-		std::this_thread::sleep_for(std::chrono::microseconds(ctx->delay_us));
+		DELAY_MS(ctx->delay_ms);
 	}
 
 	// outside loop means no more operation to do. Cleanup the connection
-	SftpHelper::cleanup(ctx);
+	SftpHelper::disconnect(ctx);
 }
 
 static Napi::Value js_connect(const Napi::CallbackInfo& info)
@@ -143,7 +171,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	Napi::Env env = info.Env();
 
 	if (info.Length() < 1 || !info[0].IsObject()) {
-		Napi::TypeError::New(env, "Expected object")
+		Napi::TypeError::New(env, "Expected an object")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
@@ -151,7 +179,6 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	Napi::Object arg = info[0].As<Napi::Object>();
 
 	std::string host;
-	uint16_t    port = 22U;
 	std::string username;
 	std::string pubkey;
 	std::string privkey;
@@ -159,6 +186,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	std::string remote_path;
 	std::string local_path;
 
+	// ------------------- Mandatory properties --------------------------------
 	if (arg.Has("host")) {
 		if (!arg.Get("host").IsString() || arg.Get("host").IsEmpty()) {
 			Napi::TypeError::New(env, "'host' is empty")
@@ -174,7 +202,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	}
 
 	if (arg.Has("username")) {
-		if (!arg.Get("host").IsString() || arg.Get("host").IsEmpty()) {
+		if (!arg.Get("username").IsString() || arg.Get("username").IsEmpty()) {
 			Napi::TypeError::New(env, "'username' is empty")
 				.ThrowAsJavaScriptException();
 			return Napi::Boolean::New(env, false);
@@ -213,6 +241,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		local_path = arg.Get("localPath").As<Napi::String>().Utf8Value();
 	}
 
+	// ------------------------ Auth properties --------------------------------
 	if (arg.Has("pubkey")) {
 		if (!arg.Get("pubkey").IsString() || arg.Get("pubkey").IsEmpty()) {
 			Napi::TypeError::New(env, "'pubkey' is empty")
@@ -248,46 +277,43 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	if (arg.Has("port")) {
-		uint32_t tmp = arg.Get("port").As<Napi::Number>().Uint32Value();
-
-		if (tmp > 0xFFFF || tmp == 0) {
-			Napi::TypeError::New(env, "'port' number max is 65535")
-				.ThrowAsJavaScriptException();
-
-			return Napi::Boolean::New(env, false);
-		}
-
-		port = static_cast<uint16_t>(tmp);
-	} else {
-		fprintf(stderr, "Port is empty. Will use port %u\n", port);
-	}
-
 	SftpWatch_t* ctx = new SftpWatch_t(env, ++ids);
 
-	ctx->host        = host;
-	ctx->port        = port;
-	ctx->username    = username;
-	ctx->pubkey      = pubkey;
-	ctx->privkey     = privkey;
-	ctx->password    = password;
-	ctx->remote_path = remote_path;
-	ctx->local_path  = local_path;
+	ctx->host         = host;
+	ctx->username     = username;
+	ctx->pubkey       = pubkey;
+	ctx->privkey      = privkey;
+	ctx->password     = password;
+	ctx->remote_path  = remote_path;
+	ctx->local_path   = local_path;
+	ctx->is_connected = false;
 
-	if (SftpHelper::connect(ctx)) {
-		Napi::TypeError::New(env, "Can't connect to sftp server!")
-			.ThrowAsJavaScriptException();
-
-		delete ctx;
-
-		return Napi::Boolean::New(env, false);
+	// -------------------- Optional properties --------------------------------
+	if (arg.Has("port")) {
+		uint32_t tmp = arg.Get("port").As<Napi::Number>().Uint32Value();
+		ctx->port = static_cast<uint16_t>(tmp);
 	}
 
-	if (SftpHelper::auth(ctx)) {
-		Napi::TypeError::New(env, "Authentication Failed!")
-			.ThrowAsJavaScriptException();
+	if (arg.Has("delayMs")) {
+		uint32_t tmp = arg.Get("delayMs").As<Napi::Number>().Uint32Value();
+		if (tmp > 0) ctx->delay_ms = tmp;
+	}
 
+	if (arg.Has("timeout")) {
+		uint32_t tmp = arg.Get("timeout").As<Napi::Number>().Uint32Value();
+		if (tmp > 0) ctx->timeout_sec = static_cast<uint16_t>(tmp);
+	}
+
+	if (arg.Has("maxErrCount")) {
+		uint32_t tmp = arg.Get("maxErrCount").As<Napi::Number>().Uint32Value();
+		ctx->max_err_count = static_cast<uint8_t>(tmp);
+	}
+
+	if (connect_or_reconnect(ctx)) {
 		delete ctx;
+
+		Napi::TypeError::New(env, "Can't connect to sftp server!")
+			.ThrowAsJavaScriptException();
 
 		return Napi::Boolean::New(env, false);
 	}
