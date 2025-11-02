@@ -1,8 +1,12 @@
 module.exports = {
 	host: '127.0.0.1',
 	port: 22,
-	path: '/tmp',
+	remotePath: '/path/to/remote_dir',
+	localPath: '/path/to/local_dir',
 	username: 'user',
 	privkey: '/home/user/.ssh/id_rsa',
 	pubkey: '/home/user/.ssh/id_rsa.pub',
+	password: 'secret',
+	timeout: 10,
+	delayMs: 1000,
 };
