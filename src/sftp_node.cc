@@ -138,8 +138,6 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 				Napi::Error::Fatal("new file err", "BlockingCall() failed");
 			}
 
-			printf("File '%s' %d\n", now.name.c_str());
-
 			// TODO: sync directory and its tree, until reached max depth
 
 			// wait until the BlockingCall is finished
