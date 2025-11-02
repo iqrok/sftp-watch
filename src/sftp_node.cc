@@ -3,6 +3,7 @@
 #include <map>
 #include <thread>
 #include <vector>
+#include <atomic>
 
 #include <napi.h>
 
@@ -19,11 +20,14 @@
 #define EVT_NAME_MOD "mod"
 
 typedef struct EvtFile_s {
+	bool        status = false;
 	const char* name;
 	DirItem_t*  file;
 } EvtFile_t;
 
-static uint32_t                         ids = 0;
+static uint32_t          ids = 0;
+static std::atomic<bool> sync_cb_done = false;
+
 static std::map<uint32_t, SftpWatch_t*> watchers;
 
 static Napi::Value js_connect(const Napi::CallbackInfo& info);
@@ -65,7 +69,13 @@ static void sync_dir_tsfn_cb(
 	obj.Set("time", Napi::Number::New(env, item->file->attrs.mtime * 1e3));
 	obj.Set("perm", Napi::Number::New(env, item->file->attrs.permissions));
 
+	// don't forget to delete the data, since we used dynamic allocation
+	delete item;
+
 	js_cb.Call({ obj });
+
+	// tell the loop that the js callback is finished after data is freed
+	sync_cb_done = true;
 }
 
 static void thread_sync_dir(SftpWatch_t* ctx)
@@ -73,13 +83,10 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 	while (!ctx->is_stopped) {
 		PairFileDet_t current;
 		DirItem_t     item;
-		EvtFile_t     sync_evt;
 
 		// open remote dir first
 		int32_t rc = SftpHelper::open_dir(ctx, ctx->remote_path.c_str());
 		if (rc) {
-			fprintf(stderr, "Failed to open path\n");
-
 			if (++ctx->err_count >= ctx->max_err_count) {
 				connect_or_reconnect(ctx);
 				ctx->err_count = 0;
@@ -101,38 +108,42 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		for (const auto& [key, val] : current) {
 			if (val.name == "." || val.name == "..") continue;
 
-			DirItem_t* now = &current[key];
-			DirItem_t* old = ctx->last_files.contains(key)
-				? &ctx->last_files[key]
-				: nullptr;
-
-			bool is_mod = false;
-			bool is_new = old == nullptr;
+			DirItem_t now    = current[key];
+			bool      is_mod = false;
+			bool      is_new = !ctx->last_files.contains(key);
 
 			if (!is_new) {
-				is_mod = (old->attrs.filesize != now->attrs.filesize
-					|| old->attrs.mtime != now->attrs.mtime);
+				is_mod = (ctx->last_files[key].attrs.filesize
+							 != now.attrs.filesize)
+					|| (ctx->last_files[key].attrs.mtime != now.attrs.mtime);
 			}
 
-			if (is_new || is_mod) {
-				// only write regular file
-				if (now->type == IS_REG_FILE) {
-					// TODO: multiple files at once with single connection
-					SftpHelper::sync_remote(ctx, now);
-				}
+			if (!(is_new || is_mod)) continue;
 
-				sync_evt.name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
-				sync_evt.file = now;
-
-				// BlockingCall() should never fail, since max queue size is 0
-				napi_status call
-					= ctx->tsfn.BlockingCall(&sync_evt, sync_dir_tsfn_cb);
-				if (call != napi_ok) {
-					Napi::Error::Fatal("new file err", "BlockingCall() failed");
-				}
-
-				// TODO: sync directory and its tree, until reached max depth
+			// only write regular file
+			if (now.type == IS_REG_FILE) {
+				// TODO: multiple files at once with single connection
+				SftpHelper::sync_remote(ctx, &now);
 			}
+
+			EvtFile_t* sync_evt = new EvtFile_t;
+			sync_evt->name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
+			sync_evt->file = &now;
+
+			// BlockingCall() should never fail, since max queue size is 0
+			sync_cb_done = false;
+			napi_status call_status
+				= ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb);
+			if (call_status != napi_ok) {
+				Napi::Error::Fatal("new file err", "BlockingCall() failed");
+			}
+
+			printf("File '%s' %d\n", now.name.c_str());
+
+			// TODO: sync directory and its tree, until reached max depth
+
+			// wait until the BlockingCall is finished
+			while (!sync_cb_done) DELAY_US(10);
 		}
 
 		for (const auto& [key, val] : ctx->last_files) {
@@ -140,20 +151,28 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 			DirItem_t old = val;
 
-			sync_evt.name = EVT_NAME_DEL;
-			sync_evt.file = &old;
-
 			SftpHelper::remove_local(ctx, old.name);
 
+			EvtFile_t* sync_evt = new EvtFile_t;
+			sync_evt->name = EVT_NAME_DEL;
+			sync_evt->file = &old;
+
+			sync_cb_done = false;
 			napi_status call
-				= ctx->tsfn.BlockingCall(&sync_evt, sync_dir_tsfn_cb);
+				= ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb);
 			if (call != napi_ok) {
 				Napi::Error::Fatal("del file err", "BlockingCall() failed");
 			}
+
+			// wait until the BlockingCall is finished, the reset the flag
+			while (!sync_cb_done);
+			sync_cb_done = false;
 		}
 
 		// update last data
 		ctx->last_files = current;
+
+		//~ std::erase_if(ev_data, [](EvtFile_t val){ return val.status; });
 
 		DELAY_MS(ctx->delay_ms);
 	}
@@ -362,12 +381,39 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 	return Napi::Boolean::New(env, true);
 }
 
+static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	if (info.Length() < 1) {
+		Napi::TypeError::New(
+			env, "Invalid params. Should be <context_id>")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[0].IsNumber()) {
+		Napi::TypeError::New(env, "Invalid context id. Should be a number")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	const uint32_t id = info[0].As<Napi::Number>().Uint32Value();
+
+	SftpWatch_t* ctx = watchers.at(id);
+	ctx->is_stopped = true;
+
+	return env.Undefined();
+}
+
 static Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 {
 	exports.Set(Napi::String::New(env, "connect"),
 		Napi::Function::New(env, js_connect));
 	exports.Set(
 		Napi::String::New(env, "sync"), Napi::Function::New(env, js_sync_dir));
+	exports.Set(
+		Napi::String::New(env, "stop"), Napi::Function::New(env, js_sync_stop));
 
 	return exports;
 }
