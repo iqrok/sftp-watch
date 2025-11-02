@@ -2,7 +2,7 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifdef __linux__
+#ifndef _WIN32
 #	include <netdb.h>
 #	include <sys/socket.h>
 #	include <unistd.h>
@@ -265,12 +265,13 @@ void SftpHelper::disconnect(SftpWatch_t* ctx)
 	}
 
 	if (ctx->sock != LIBSSH2_INVALID_SOCKET) {
-		shutdown(ctx->sock, 2);
+		// NOTE: this is how to prevent name conflict with extern "C"
+		::shutdown(ctx->sock, 2);
 		LIBSSH2_SOCKET_CLOSE(ctx->sock);
 	}
 }
 
-void SftpHelper::deinit()
+void SftpHelper::shutdown()
 {
 	libssh2_exit();
 

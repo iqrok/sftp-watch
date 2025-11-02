@@ -6,7 +6,7 @@
 
 namespace SftpHelper {
 
-void    deinit();
+void    shutdown();
 int32_t connect(SftpWatch_t* ctx);
 void    disconnect(SftpWatch_t* ctx);
 int32_t auth(SftpWatch_t* ctx);

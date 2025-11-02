@@ -44,7 +44,7 @@ static void finalizer_sync_dir(
 
 	delete ctx;
 
-	if (watchers.empty()) SftpHelper::deinit();
+	if (watchers.empty()) SftpHelper::shutdown();
 }
 
 static void sync_dir_tsfn_cb(

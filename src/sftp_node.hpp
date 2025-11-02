@@ -11,11 +11,8 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifdef __linux__
-#	include <sys/socket.h>
-#	include <unistd.h>
+#ifndef _WIN32
 #	include <netinet/in.h>
-#	include <arpa/inet.h>
 #endif
 
 // default to 30000, as it is the value of max SFTP Packet

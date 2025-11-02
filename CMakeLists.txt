@@ -63,14 +63,7 @@ if (DEFINED SFTP_FILENAME_MAX_LEN)
 		PRIVATE SFTP_FILENAME_MAX_LEN=${SFTP_FILENAME_MAX_LEN})
 endif ()
 
-if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
-	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
-	target_compile_options("${PROJECT_NAME}"
-		PRIVATE
-			#~ -EHsc # enable exception
-			-W4   # equivalent of -Wall
-			-O2)
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	target_compile_options("${PROJECT_NAME}"
 		PRIVATE
 			#~ -fexceptions # enable exception
@@ -80,6 +73,13 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL
 			-Wpedantic
 			-O2
 		)
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
+	target_compile_options("${PROJECT_NAME}"
+		PRIVATE
+			#~ -EHsc # enable exception
+			-W4   # equivalent of -Wall
+			-O2)
 else ()
 	message(FATAL_ERROR "Unknown Environment")
 endif ()
@@ -90,12 +90,13 @@ if (BUILD_STATIC_LINK)
 	set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".lib")
 endif ()
 
-# pthread
+# prefer pthread if available
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 target_link_libraries("${PROJECT_NAME}" PRIVATE Threads::Threads)
 
 if (DEFINED ENV{ZLIB_LIB} AND DEFINED ENV{ZLIB_DIR})
+	message(STATUS "Using provided ZLib from env variable")
 	target_link_libraries("${PROJECT_NAME}" PRIVATE "$ENV{ZLIB_LIB}")
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{ZLIB_DIR}")
 else ()
@@ -104,6 +105,7 @@ else ()
 endif ()
 
 if (DEFINED ENV{OPENSSL_SSL_LIB} AND DEFINED ENV{OPENSSL_CRYPTO_LIB} AND DEFINED ENV{OPENSSL_DIR})
+	message(STATUS "Using provided OpenSSL from env variable")
 	target_link_libraries("${PROJECT_NAME}"
 		PRIVATE
 			"$ENV{OPENSSL_SSL_LIB}"
@@ -118,9 +120,9 @@ else ()
 endif ()
 
 if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
+	message(STATUS "Using provided libssh2 from env variable")
 	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{LIBSSH2_DIR}")
-	message("Using provided libssh2 from env variable")
 else ()
 	find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2)
 	find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h)
