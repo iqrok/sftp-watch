@@ -1,6 +1,12 @@
 const SftpWatch = require('../build/Release/sftp-watch.node');
 const config = require('./config.js');
 
+// overwrite localPath to use sample/test directory
+config.localPath = __dirname + '/test';
+
+const fs = require('fs');
+if (!fs.existsSync(config.localPath)) fs.mkdirSync(config.localPath)
+
 function formatBytes(size, useBinary = false) {
 	const units = useBinary
 		? ['B', 'KiB', 'MiB', 'GiB', 'TiB']

@@ -10,6 +10,16 @@
 #	include <arpa/inet.h>
 #	include <sys/time.h>
 #	include <utime.h>
+#else
+#	include <winsock2.h>     // sockets, basic networking
+#	include <ws2tcpip.h>     // getaddrinfo, inet_pton, etc.
+#	include <windows.h>      // general Windows API, timeval replacement
+#	include <io.h>           // _close, _read, _write (instead of unistd.h)
+#	include <sys/types.h>    // basic types
+#	include <sys/stat.h>     // file status
+#	include <sys/utime.h>    // _utime(), _utimbuf
+
+#	define write(f, b, c)  write((f), (b), (unsigned int)(c))
 #endif
 
 #include <cstdio>
@@ -64,6 +74,15 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 	int32_t rc;
 
 	if (!is_inited) {
+#ifdef _WIN32
+		WSADATA wsadata;
+
+		rc = WSAStartup(MAKEWORD(2, 0), &wsadata);
+		if(rc) {
+			fprintf(stderr, "WSAStartup failed with error: %d\n", rc);
+			return 1;
+		}
+#endif
 		if ((rc = libssh2_init(0)) != 0) {
 			fprintf(stderr, "libssh2 initialization failed (%d)\n", rc);
 			return -127;
@@ -164,7 +183,12 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			== LIBSSH2_ERROR_EAGAIN);
 
 		if (rc) {
-			fprintf(stderr, "Authentication by public key failed %d.\n", rc);
+			char* errmsg;
+			int32_t errcode
+				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
+
+			fprintf(stderr, "Authentication by public key failed [%d] %s\n",
+				errcode, errmsg ? errmsg : "Unknown error message");
 			return -1;
 		}
 	} else if (!ctx->password.empty()) {
