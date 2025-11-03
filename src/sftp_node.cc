@@ -170,8 +170,6 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		// update last data
 		ctx->last_files = current;
 
-		//~ std::erase_if(ev_data, [](EvtFile_t val){ return val.status; });
-
 		DELAY_MS(ctx->delay_ms);
 	}
 
