@@ -1,4 +1,4 @@
-const SftpWatch = require('../build/Release/sftp-watch.node');
+const SftpWatch = require('..');
 const config = require('./config.js');
 
 // overwrite localPath to use sample/test directory
