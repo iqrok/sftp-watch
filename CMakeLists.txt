@@ -16,6 +16,17 @@ execute_process(COMMAND node -p "require('node-addon-api').include"
 		OUTPUT_VARIABLE NODE_ADDON_API_DIR)
 string(REGEX REPLACE "[\r\n\"]" "" NODE_ADDON_API_DIR ${NODE_ADDON_API_DIR})
 
+# Preparation for Windows using vcpkg
+if (WIN32)
+	if (NOT DEFINED ENV{VCPKG_ROOT})
+		message(FATAL_ERROR "$ENV{VCPKG_ROOT}: Env VCPKG_ROOT needs to be set!")
+	endif ()
+
+	set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+endif ()
+
+message(STATUS ${CMAKE_TOOLCHAIN_FILE})
+
 project(sftp-watch
 	LANGUAGES C CXX
 	VERSION 0.1.0)
@@ -33,6 +44,7 @@ endif ()
 
 add_library("${PROJECT_NAME}"
 	SHARED
+		${CMAKE_JS_SRC}
 		"${SRC_DIR}/sftp_helper.cc"
 		"${SRC_DIR}/sftp_node.cc")
 
@@ -47,6 +59,8 @@ target_include_directories("${PROJECT_NAME}"
 		"${NODE_ADDON_API_DIR}"
 		"${NAPI_INCLUDE_DIR}"
 		"${INC_DIR}")
+
+target_link_libraries("${PROJECT_NAME}" PRIVATE ${CMAKE_JS_LIB})
 
 target_compile_definitions("${PROJECT_NAME}"
 	PRIVATE
@@ -73,6 +87,9 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU
 			-Wpedantic
 			-O2
 		)
+
+	# prefer pthread if available
+	set(THREADS_PREFER_PTHREAD_FLAG ON)
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
 	target_compile_options("${PROJECT_NAME}"
@@ -80,18 +97,19 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 			#~ -EHsc # enable exception
 			-W4   # equivalent of -Wall
 			-O2)
+
+	set(THREADS_PREFER_PTHREAD_FLAG OFF)
 else ()
 	message(FATAL_ERROR "Unknown Environment")
 endif ()
 
 if (BUILD_STATIC_LINK)
+	message(STATUS "BUILD_STATIC_LINK")
 	set(ZLIB_USE_STATIC_LIBS ON)
 	set(OPENSSL_USE_STATIC_LIBS ON)
 	set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".lib")
 endif ()
 
-# prefer pthread if available
-set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 target_link_libraries("${PROJECT_NAME}" PRIVATE Threads::Threads)
 

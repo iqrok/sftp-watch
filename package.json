@@ -13,7 +13,7 @@
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
 		"rebuild": "cmake-js rebuild",
-		"postinstall": "npm run rebuild"
+		"postinstall": "npm run compile"
 	},
 	"main": "build/Release/sftp-watch.node",
 	"dependencies": {
