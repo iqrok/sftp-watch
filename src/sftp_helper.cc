@@ -37,6 +37,7 @@
 
 static bool is_inited = false;
 
+#define FN_RC_EAGAIN(rc, fn)   (((rc) = (fn)) == LIBSSH2_ERROR_EAGAIN)
 #define FN_ACTUAL_ERROR(err)   ((err) != LIBSSH2_ERROR_EAGAIN)
 #define FN_LAST_ERRNO_ERROR(s) FN_ACTUAL_ERROR(libssh2_session_last_errno(s))
 
@@ -213,7 +214,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 
 int32_t SftpHelper::auth(SftpWatch_t* ctx)
 {
-	int rc;
+	int32_t rc;
 
 	/*
 	 * Authentication will prioritize pubkey over password.
@@ -267,34 +268,61 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 	return 0;
 }
 
-int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
+int32_t SftpHelper::close_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 {
-	do {
-		ctx->sftp_handle = libssh2_sftp_opendir(ctx->sftp_session, remote_path);
+	if (!dir->is_opened) return 0;
 
-		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
+	int32_t rc = 0;
+
+	while (FN_RC_EAGAIN(rc, libssh2_sftp_closedir(dir->handle)));
+
+	if (rc) {
+		int32_t errcode = libssh2_sftp_last_error(ctx->sftp_session);
+
+		fprintf(stderr, "Failed to close dir '%s' [%d]\n", dir->path.c_str(),
+			errcode);
+
+		return errcode;
+	}
+
+	dir->is_opened = false;
+
+	return 0;
+}
+
+int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
+{
+	if (dir->is_opened) SftpHelper::close_dir(ctx, dir);
+
+	do {
+		dir->handle
+			= libssh2_sftp_opendir(ctx->sftp_session, dir->path.c_str());
+
+		if (!dir->handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
 			char*   errmsg;
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
 			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n",
-				remote_path, errcode,
+				dir->path.c_str(), errcode,
 				errmsg ? errmsg : "Unknown error message");
 
 			return errcode;
 		}
-	} while (!ctx->sftp_handle);
+	} while (!dir->handle);
+
+	dir->is_opened = true;
 
 	return 0;
 }
 
-int32_t SftpHelper::read_dir(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpHelper::read_dir(RemoteDir_t* dir, DirItem_t* file)
 {
-	int rc = 0;
+	int32_t rc = 0;
 
 	char filename[SFTP_FILENAME_MAX_LEN];
 	while ((rc = libssh2_sftp_readdir(
-				ctx->sftp_handle, filename, sizeof(filename), &file->attrs))
+				dir->handle, filename, sizeof(filename), &file->attrs))
 		== LIBSSH2_ERROR_EAGAIN);
 
 	// there's a record
@@ -338,7 +366,6 @@ uint8_t SftpHelper::get_filetype(DirItem_t* file)
 
 void SftpHelper::disconnect(SftpWatch_t* ctx)
 {
-	libssh2_sftp_close(ctx->sftp_handle);
 	libssh2_sftp_shutdown(ctx->sftp_session);
 
 	if (ctx->session) {

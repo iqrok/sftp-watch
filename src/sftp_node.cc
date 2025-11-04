@@ -84,8 +84,11 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		PairFileDet_t current;
 		DirItem_t     item;
 
+		RemoteDir_t dir;
+		dir.path = ctx->remote_path;
+
 		// open remote dir first
-		int32_t rc = SftpHelper::open_dir(ctx, ctx->remote_path.c_str());
+		int32_t rc = SftpHelper::open_dir(ctx, &dir);
 		if (rc) {
 			if (++ctx->err_count >= ctx->max_err_count) {
 				connect_or_reconnect(ctx);
@@ -100,7 +103,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		ctx->err_count = 0;
 
 		// read the opened directory
-		while ((rc = SftpHelper::read_dir(ctx, &item)) != 0) {
+		while ((rc = SftpHelper::read_dir(&dir, &item)) != 0) {
 			current[std::string(item.name)] = item;
 		}
 
@@ -188,6 +191,9 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 		// update last data
 		ctx->last_files = current;
+
+		// close opened dir
+		SftpHelper::close_dir(ctx, &dir);
 
 		DELAY_MS(ctx->delay_ms);
 	}
