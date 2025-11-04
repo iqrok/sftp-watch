@@ -13,6 +13,8 @@
 
 #ifdef _POSIX_VERSION
 #	include <netinet/in.h>
+
+#	define SNOD_FILE_PERM(attr) (attr.permissions & 0777)
 #endif
 
 // default to 30000, as it is the value of max SFTP Packet
@@ -44,15 +46,6 @@ struct DirItem_s {
 	std::string name;
 
 	LIBSSH2_SFTP_ATTRIBUTES attrs;
-	/*
-	 * LIBSSH2_SFTP_S_ISLNK  Test for a symbolic link
-	 * LIBSSH2_SFTP_S_ISREG  Test for a regular file
-	 * LIBSSH2_SFTP_S_ISDIR  Test for a directory
-	 * LIBSSH2_SFTP_S_ISCHR  Test for a character special file
-	 * LIBSSH2_SFTP_S_ISBLK  Test for a block special file
-	 * LIBSSH2_SFTP_S_ISFIFO Test for a pipe or FIFO special file
-	 * LIBSSH2_SFTP_S_ISSOCK Test for a socket
-	 * */
 };
 
 struct SftpWatch_s {

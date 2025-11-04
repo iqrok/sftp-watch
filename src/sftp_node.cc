@@ -67,8 +67,7 @@ static void sync_dir_tsfn_cb(
 	obj.Set("type", Napi::String::New(env, std::string(1, item->file->type)));
 	obj.Set("size", Napi::Number::New(env, item->file->attrs.filesize));
 	obj.Set("time", Napi::Number::New(env, item->file->attrs.mtime * 1e3));
-	obj.Set(
-		"perm", Napi::Number::New(env, item->file->attrs.permissions & 0777));
+	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(item->file->attrs)));
 
 	// don't forget to delete the data, since we used dynamic allocation
 	delete item;
@@ -122,9 +121,21 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			if (!(is_new || is_mod)) continue;
 
 			// only write regular file
-			if (now.type == IS_REG_FILE) {
+			switch (now.type) {
+
+			case IS_REG_FILE: {
 				// TODO: multiple files at once with single connection
-				SftpHelper::sync_remote(ctx, &now);
+				SftpHelper::sync_file_remote(ctx, &now);
+			} break;
+
+			// TODO: sync directory and its tree, until reached max depth
+			case IS_DIR: {
+				SftpHelper::mkdir_local(ctx, &now);
+			} break;
+
+			default: {
+				// nothing to do for now
+			} break;
 			}
 
 			EvtFile_t* sync_evt = new EvtFile_t;
@@ -133,13 +144,9 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 			// BlockingCall() should never fail, since max queue size is 0
 			sync_cb_done = false;
-			napi_status call_status
-				= ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb);
-			if (call_status != napi_ok) {
+			if (ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb) != napi_ok) {
 				Napi::Error::Fatal("new file err", "BlockingCall() failed");
 			}
-
-			// TODO: sync directory and its tree, until reached max depth
 
 			// wait until the BlockingCall is finished
 			while (!sync_cb_done) DELAY_US(10);
@@ -150,16 +157,27 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 			DirItem_t old = val;
 
-			SftpHelper::remove_local(ctx, old.name);
+			switch (old.type) {
+
+			case IS_DIR: {
+				// TODO: check if dir is removed or renamed
+			} break;
+
+			/*
+			 * NOTE: any file type should be safe enough to be remove directly,
+			 *       right?
+			 * */
+			default: {
+				SftpHelper::remove_local(ctx, old.name);
+			} break;
+			}
 
 			EvtFile_t* sync_evt = new EvtFile_t;
 			sync_evt->name      = EVT_NAME_DEL;
 			sync_evt->file      = &old;
 
 			sync_cb_done = false;
-			napi_status call
-				= ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb);
-			if (call != napi_ok) {
+			if (ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb) != napi_ok) {
 				Napi::Error::Fatal("del file err", "BlockingCall() failed");
 			}
 

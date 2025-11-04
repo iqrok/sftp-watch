@@ -21,6 +21,12 @@
 #	include <sys/utime.h> // _utime(), _utimbuf
 
 #	define write(f, b, c) write((f), (b), (unsigned int)(c))
+
+// TODO: Needs to check these on Windows
+#	define stat           _stat
+#	define S_ISDIR(mode)  ((mode) & _S_IFDIR)
+#elif
+#	error "UNKNOWN ENVIRONMENT"
 #endif
 
 #include <cstdio>
@@ -358,7 +364,7 @@ void SftpHelper::shutdown()
 	is_inited = false;
 }
 
-int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 {
 	std::string remote_file = ctx->remote_path + std::string("/") + file->name;
 	std::string local_file  = ctx->local_path + std::string("/") + file->name;
@@ -463,7 +469,7 @@ int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 #ifdef _POSIX_VERSION
 	// set file attribute to match remote. non-windows only
-	if (chmod(local_file.c_str(), file->attrs.permissions & 0777)) {
+	if (chmod(local_file.c_str(), SNOD_FILE_PERM(file->attrs))) {
 		fprintf(stderr, "Failed to set attributes: %d\n", errno);
 	}
 #endif
@@ -482,4 +488,35 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 	}
 
 	return 0;
+}
+
+int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
+{
+	std::string local_dir = ctx->local_path + std::string("/") + file->name;
+	struct stat st;
+	int32_t     rc = 0;
+
+	// check if path exists
+	if (stat(local_dir.c_str(), &st) == 0) {
+		// existing path is directory. Return success
+		if (S_ISDIR(st.st_mode)) return 0;
+
+		// TODO: what to do when path exist but not a directory
+		return -1;
+	}
+
+	// create directory if doesn't exist
+#ifdef _POSIX_VERSION
+	rc = mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
+	if (rc) fprintf(stderr, "Failed create directory: %d\n", errno);
+#endif
+
+#ifdef _WIN32
+	rc = CreateDirectoryA(local_dir.c_str(), NULL);
+	if (rc) {
+		fprintf(stderr, "Failed create directory: %d\n", GetLastError());
+	}
+#endif
+
+	return rc;
 }
