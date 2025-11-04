@@ -47,6 +47,7 @@ try {
 				+ `${getEvtColor(file.evt)}[${file.evt}]\x1b[0m `
 				+ `\x1b[3m<type ${file.type}>\x1b[0m `
 				+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
+				+ `${file.perm.toString(8)} `
 				+ `${formatBytes(file.size)} `
 				+ `\x1b[1m\x1b[33m${file.name}\x1b[0m `
 			);

@@ -11,7 +11,7 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifndef _WIN32
+#ifdef _POSIX_VERSION
 #	include <netinet/in.h>
 #endif
 

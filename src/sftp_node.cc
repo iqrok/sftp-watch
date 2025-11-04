@@ -67,7 +67,8 @@ static void sync_dir_tsfn_cb(
 	obj.Set("type", Napi::String::New(env, std::string(1, item->file->type)));
 	obj.Set("size", Napi::Number::New(env, item->file->attrs.filesize));
 	obj.Set("time", Napi::Number::New(env, item->file->attrs.mtime * 1e3));
-	obj.Set("perm", Napi::Number::New(env, item->file->attrs.permissions));
+	obj.Set(
+		"perm", Napi::Number::New(env, item->file->attrs.permissions & 0777));
 
 	// don't forget to delete the data, since we used dynamic allocation
 	delete item;

@@ -2,15 +2,16 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifndef _WIN32
+#if defined(_POSIX_VERSION)
 #	include <netdb.h>
 #	include <sys/socket.h>
-#	include <unistd.h>
+#	include <sys/stat.h>
+#	include <sys/time.h>
 #	include <netinet/in.h>
 #	include <arpa/inet.h>
-#	include <sys/time.h>
+#	include <unistd.h>
 #	include <utime.h>
-#else
+#elif defined(_WIN32)
 #	include <winsock2.h>  // sockets, basic networking
 #	include <ws2tcpip.h>  // getaddrinfo, inet_pton, etc.
 #	include <windows.h>   // general Windows API, timeval replacement
@@ -455,9 +456,17 @@ int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
 		.modtime = (time_t)file->attrs.mtime,
 	};
 
+	// set modified & access time time to match remote
 	if (utime(local_file.c_str(), &times)) {
 		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
 	}
+
+#ifdef _POSIX_VERSION
+	// set file attribute to match remote. non-windows only
+	if (chmod(local_file.c_str(), file->attrs.permissions & 0777)) {
+		fprintf(stderr, "Failed to set attributes: %d\n", errno);
+	}
+#endif
 
 	return err;
 }
