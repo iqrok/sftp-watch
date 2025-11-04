@@ -186,8 +186,6 @@ I created this module out of curiosity, so several limitations were intentionall
 
 - Only single-level synchronization is implemented. Files inside subdirectories are not synchronized.
 
-- Password authentication does exist in SSH/SFTP, but many SSH servers that appear to support ordinary password authentication actually have it disabled and use keyboard-interactive authentication instead. Keyboard-interactive authentication is not supported.
-
 - Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file. Although the final result remains identical between remote and local, this may cause confusion since the 'modified' event keeps triggering until the remote writing process is finished.
 
 - Error handling is still limited, particularly regarding failed connections and failed directory or file reads.
