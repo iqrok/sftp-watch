@@ -37,8 +37,10 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
-typedef struct DirItem_s                 DirItem_t;
-typedef struct SftpWatch_s               SftpWatch_t;
+typedef struct DirItem_s   DirItem_t;
+typedef struct SftpWatch_s SftpWatch_t;
+typedef struct RemoteDir_s RemoteDir_t;
+
 typedef std::map<std::string, DirItem_t> PairFileDet_t;
 
 struct DirItem_s {
@@ -46,6 +48,13 @@ struct DirItem_s {
 	std::string name;
 
 	LIBSSH2_SFTP_ATTRIBUTES attrs;
+};
+
+struct RemoteDir_s {
+	bool        is_opened = false;
+	std::string path;
+
+	LIBSSH2_SFTP_HANDLE* handle;
 };
 
 struct SftpWatch_s {
@@ -66,18 +75,18 @@ struct SftpWatch_s {
 	uint8_t err_count     = 0;
 	uint8_t max_err_count = 3;
 
-	libssh2_socket_t     sock;
-	LIBSSH2_SESSION*     session;
-	LIBSSH2_SFTP*        sftp_session;
-	LIBSSH2_SFTP_HANDLE* sftp_handle;
-	struct sockaddr_in   sin;
-	const char*          fingerprint;
+	libssh2_socket_t   sock;
+	LIBSSH2_SESSION*   session;
+	LIBSSH2_SFTP*      sftp_session;
+	struct sockaddr_in sin;
+	const char*        fingerprint;
+
+	RemoteDir_t   dir_handle;
+	PairFileDet_t last_files;
 
 	Napi::Promise::Deferred  deferred;
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
-
-	PairFileDet_t last_files;
 
 	bool     is_stopped;
 	uint32_t delay_ms = 1000;
