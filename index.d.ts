@@ -10,6 +10,7 @@ export interface Config {
   password?: string;
   privkey?: string;
   pubkey?: string;
+  useKeyboard?: boolean;
   timeout?: number;
   delayMs?: number;
   maxErrCount?: number;

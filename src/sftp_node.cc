@@ -1,9 +1,9 @@
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
 #include <thread>
 #include <vector>
-#include <atomic>
 
 #include <napi.h>
 
@@ -25,7 +25,7 @@ typedef struct EvtFile_s {
 	DirItem_t*  file;
 } EvtFile_t;
 
-static uint32_t          ids = 0;
+static uint32_t          ids          = 0;
 static std::atomic<bool> sync_cb_done = false;
 
 static std::map<uint32_t, SftpWatch_t*> watchers;
@@ -67,7 +67,7 @@ static void sync_dir_tsfn_cb(
 	obj.Set("type", Napi::String::New(env, std::string(1, item->file->type)));
 	obj.Set("size", Napi::Number::New(env, item->file->attrs.filesize));
 	obj.Set("time", Napi::Number::New(env, item->file->attrs.mtime * 1e3));
-	obj.Set("perm", Napi::Number::New(env, item->file->attrs.permissions));
+	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(item->file->attrs)));
 
 	// don't forget to delete the data, since we used dynamic allocation
 	delete item;
@@ -121,24 +121,32 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			if (!(is_new || is_mod)) continue;
 
 			// only write regular file
-			if (now.type == IS_REG_FILE) {
+			switch (now.type) {
+
+			case IS_REG_FILE: {
 				// TODO: multiple files at once with single connection
-				SftpHelper::sync_remote(ctx, &now);
+				SftpHelper::sync_file_remote(ctx, &now);
+			} break;
+
+			// TODO: sync directory and its tree, until reached max depth
+			case IS_DIR: {
+				SftpHelper::mkdir_local(ctx, &now);
+			} break;
+
+			default: {
+				// nothing to do for now
+			} break;
 			}
 
 			EvtFile_t* sync_evt = new EvtFile_t;
-			sync_evt->name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
-			sync_evt->file = &now;
+			sync_evt->name      = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
+			sync_evt->file      = &now;
 
 			// BlockingCall() should never fail, since max queue size is 0
 			sync_cb_done = false;
-			napi_status call_status
-				= ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb);
-			if (call_status != napi_ok) {
+			if (ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb) != napi_ok) {
 				Napi::Error::Fatal("new file err", "BlockingCall() failed");
 			}
-
-			// TODO: sync directory and its tree, until reached max depth
 
 			// wait until the BlockingCall is finished
 			while (!sync_cb_done) DELAY_US(10);
@@ -149,16 +157,27 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 			DirItem_t old = val;
 
-			SftpHelper::remove_local(ctx, old.name);
+			switch (old.type) {
+
+			case IS_DIR: {
+				// TODO: check if dir is removed or renamed
+			} break;
+
+			/*
+			 * NOTE: any file type should be safe enough to be remove directly,
+			 *       right?
+			 * */
+			default: {
+				SftpHelper::remove_local(ctx, old.name);
+			} break;
+			}
 
 			EvtFile_t* sync_evt = new EvtFile_t;
-			sync_evt->name = EVT_NAME_DEL;
-			sync_evt->file = &old;
+			sync_evt->name      = EVT_NAME_DEL;
+			sync_evt->file      = &old;
 
 			sync_cb_done = false;
-			napi_status call
-				= ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb);
-			if (call != napi_ok) {
+			if (ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb) != napi_ok) {
 				Napi::Error::Fatal("del file err", "BlockingCall() failed");
 			}
 
@@ -319,6 +338,10 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		ctx->max_err_count = static_cast<uint8_t>(tmp);
 	}
 
+	if (arg.Has("useKeyboard")) {
+		ctx->use_keyboard = arg.Get("useKeyboard").As<Napi::Boolean>().Value();
+	}
+
 	if (connect_or_reconnect(ctx)) {
 		delete ctx;
 
@@ -382,8 +405,7 @@ static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	Napi::Env env = info.Env();
 
 	if (info.Length() < 1) {
-		Napi::TypeError::New(
-			env, "Invalid params. Should be <context_id>")
+		Napi::TypeError::New(env, "Invalid params. Should be <context_id>")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
@@ -397,7 +419,7 @@ static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	const uint32_t id = info[0].As<Napi::Number>().Uint32Value();
 
 	SftpWatch_t* ctx = watchers.at(id);
-	ctx->is_stopped = true;
+	ctx->is_stopped  = true;
 
 	return env.Undefined();
 }

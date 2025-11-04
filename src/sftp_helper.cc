@@ -2,24 +2,31 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifndef _WIN32
+#if defined(_POSIX_VERSION)
 #	include <netdb.h>
 #	include <sys/socket.h>
-#	include <unistd.h>
+#	include <sys/stat.h>
+#	include <sys/time.h>
 #	include <netinet/in.h>
 #	include <arpa/inet.h>
-#	include <sys/time.h>
+#	include <unistd.h>
 #	include <utime.h>
-#else
-#	include <winsock2.h>     // sockets, basic networking
-#	include <ws2tcpip.h>     // getaddrinfo, inet_pton, etc.
-#	include <windows.h>      // general Windows API, timeval replacement
-#	include <io.h>           // _close, _read, _write (instead of unistd.h)
-#	include <sys/types.h>    // basic types
-#	include <sys/stat.h>     // file status
-#	include <sys/utime.h>    // _utime(), _utimbuf
+#elif defined(_WIN32)
+#	include <winsock2.h>  // sockets, basic networking
+#	include <ws2tcpip.h>  // getaddrinfo, inet_pton, etc.
+#	include <windows.h>   // general Windows API, timeval replacement
+#	include <io.h>        // _close, _read, _write (instead of unistd.h)
+#	include <sys/types.h> // basic types
+#	include <sys/stat.h>  // file status
+#	include <sys/utime.h> // _utime(), _utimbuf
 
-#	define write(f, b, c)  write((f), (b), (unsigned int)(c))
+#	define write(f, b, c) write((f), (b), (unsigned int)(c))
+
+// TODO: Needs to check these on Windows
+#	define stat           _stat
+#	define S_ISDIR(mode)  ((mode) & _S_IFDIR)
+#elif
+#	error "UNKNOWN ENVIRONMENT"
 #endif
 
 #include <cstdio>
@@ -69,6 +76,48 @@ static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session)
 	return rc;
 }
 
+static void kbd_callback(const char* name, int name_len,
+	const char* instruction, int instruction_len, int num_prompts,
+	const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+	LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract)
+{
+	(void)name;
+	(void)name_len;
+	(void)instruction;
+	(void)instruction_len;
+	(void)prompts;
+
+	// only expects 1 prompt, which is the password for user
+	if (num_prompts != 1) return;
+
+	SftpWatch_t* ctx = static_cast<SftpWatch_t*>(*abstract);
+
+	responses[0].text   = strdup(ctx->password.c_str());
+	responses[0].length = ctx->password.size();
+}
+
+static int32_t prv_auth_password(SftpWatch_t* ctx)
+{
+	int32_t rc = LIBSSH2_ERROR_EAGAIN;
+
+	do {
+		if (ctx->use_keyboard) {
+			rc = libssh2_userauth_keyboard_interactive_ex(ctx->session,
+				ctx->username.c_str(), ctx->username.size(), &kbd_callback);
+		} else {
+			rc = libssh2_userauth_password(
+				ctx->session, ctx->username.c_str(), ctx->password.c_str());
+		}
+	} while (rc == LIBSSH2_ERROR_EAGAIN);
+
+	if (rc) {
+		fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
+			ctx->username.c_str());
+	}
+
+	return rc;
+}
+
 int32_t SftpHelper::connect(SftpWatch_t* ctx)
 {
 	int32_t rc;
@@ -78,7 +127,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		WSADATA wsadata;
 
 		rc = WSAStartup(MAKEWORD(2, 0), &wsadata);
-		if(rc) {
+		if (rc) {
 			fprintf(stderr, "WSAStartup failed with error: %d\n", rc);
 			return 1;
 		}
@@ -128,8 +177,11 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 	// NOTE: always forgot this. FREE getaddrinfo res AFTER USE
 	freeaddrinfo(res);
 
-	/* Create a session instance */
-	ctx->session = libssh2_session_init();
+	/* Create a session instance
+	 * using extended API to set SftpWatch_t context as abstract. This way we
+	 * can access the context from callback
+	 * */
+	ctx->session = libssh2_session_init_ex(NULL, NULL, NULL, ctx);
 	if (!ctx->session) {
 		fprintf(stderr, "Could not initialize SSH session.\n");
 		return -1;
@@ -183,7 +235,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			== LIBSSH2_ERROR_EAGAIN);
 
 		if (rc) {
-			char* errmsg;
+			char*   errmsg;
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
@@ -192,10 +244,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			return -1;
 		}
 	} else if (!ctx->password.empty()) {
-		while ((rc = libssh2_userauth_password(
-					ctx->session, ctx->username.c_str(), ctx->password.c_str()))
-			== LIBSSH2_ERROR_EAGAIN);
-
+		rc = prv_auth_password(ctx);
 		if (rc) {
 			fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
 				ctx->username.c_str());
@@ -224,7 +273,7 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 		ctx->sftp_handle = libssh2_sftp_opendir(ctx->sftp_session, remote_path);
 
 		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			char* errmsg;
+			char*   errmsg;
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
@@ -315,7 +364,7 @@ void SftpHelper::shutdown()
 	is_inited = false;
 }
 
-int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 {
 	std::string remote_file = ctx->remote_path + std::string("/") + file->name;
 	std::string local_file  = ctx->local_path + std::string("/") + file->name;
@@ -413,9 +462,17 @@ int32_t SftpHelper::sync_remote(SftpWatch_t* ctx, DirItem_t* file)
 		.modtime = (time_t)file->attrs.mtime,
 	};
 
+	// set modified & access time time to match remote
 	if (utime(local_file.c_str(), &times)) {
 		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
 	}
+
+#ifdef _POSIX_VERSION
+	// set file attribute to match remote. non-windows only
+	if (chmod(local_file.c_str(), SNOD_FILE_PERM(file->attrs))) {
+		fprintf(stderr, "Failed to set attributes: %d\n", errno);
+	}
+#endif
 
 	return err;
 }
@@ -431,4 +488,35 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 	}
 
 	return 0;
+}
+
+int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
+{
+	std::string local_dir = ctx->local_path + std::string("/") + file->name;
+	struct stat st;
+	int32_t     rc = 0;
+
+	// check if path exists
+	if (stat(local_dir.c_str(), &st) == 0) {
+		// existing path is directory. Return success
+		if (S_ISDIR(st.st_mode)) return 0;
+
+		// TODO: what to do when path exist but not a directory
+		return -1;
+	}
+
+	// create directory if doesn't exist
+#ifdef _POSIX_VERSION
+	rc = mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
+	if (rc) fprintf(stderr, "Failed create directory: %d\n", errno);
+#endif
+
+#ifdef _WIN32
+	rc = CreateDirectoryA(local_dir.c_str(), NULL);
+	if (rc) {
+		fprintf(stderr, "Failed create directory: %d\n", GetLastError());
+	}
+#endif
+
+	return rc;
 }
