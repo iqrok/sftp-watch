@@ -1,9 +1,9 @@
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
 #include <thread>
 #include <vector>
-#include <atomic>
 
 #include <napi.h>
 
@@ -25,7 +25,7 @@ typedef struct EvtFile_s {
 	DirItem_t*  file;
 } EvtFile_t;
 
-static uint32_t          ids = 0;
+static uint32_t          ids          = 0;
 static std::atomic<bool> sync_cb_done = false;
 
 static std::map<uint32_t, SftpWatch_t*> watchers;
@@ -127,8 +127,8 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			}
 
 			EvtFile_t* sync_evt = new EvtFile_t;
-			sync_evt->name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
-			sync_evt->file = &now;
+			sync_evt->name      = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
+			sync_evt->file      = &now;
 
 			// BlockingCall() should never fail, since max queue size is 0
 			sync_cb_done = false;
@@ -152,8 +152,8 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			SftpHelper::remove_local(ctx, old.name);
 
 			EvtFile_t* sync_evt = new EvtFile_t;
-			sync_evt->name = EVT_NAME_DEL;
-			sync_evt->file = &old;
+			sync_evt->name      = EVT_NAME_DEL;
+			sync_evt->file      = &old;
 
 			sync_cb_done = false;
 			napi_status call
@@ -319,6 +319,10 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		ctx->max_err_count = static_cast<uint8_t>(tmp);
 	}
 
+	if (arg.Has("useKeyboard")) {
+		ctx->use_keyboard = arg.Get("useKeyboard").As<Napi::Boolean>().Value();
+	}
+
 	if (connect_or_reconnect(ctx)) {
 		delete ctx;
 
@@ -382,8 +386,7 @@ static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	Napi::Env env = info.Env();
 
 	if (info.Length() < 1) {
-		Napi::TypeError::New(
-			env, "Invalid params. Should be <context_id>")
+		Napi::TypeError::New(env, "Invalid params. Should be <context_id>")
 			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
@@ -397,7 +400,7 @@ static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	const uint32_t id = info[0].As<Napi::Number>().Uint32Value();
 
 	SftpWatch_t* ctx = watchers.at(id);
-	ctx->is_stopped = true;
+	ctx->is_stopped  = true;
 
 	return env.Undefined();
 }

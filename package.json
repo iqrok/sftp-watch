@@ -1,6 +1,6 @@
 {
 	"name": "@iqrok/sftp-watch",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"files": [
 		"src/*.cc",
 		"src/*.cpp",
@@ -10,6 +10,7 @@
 		"CMakeLists.txt"
 	],
 	"scripts": {
+		"build:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1",
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
 		"rebuild": "cmake-js rebuild",

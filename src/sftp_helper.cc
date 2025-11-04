@@ -11,15 +11,15 @@
 #	include <sys/time.h>
 #	include <utime.h>
 #else
-#	include <winsock2.h>     // sockets, basic networking
-#	include <ws2tcpip.h>     // getaddrinfo, inet_pton, etc.
-#	include <windows.h>      // general Windows API, timeval replacement
-#	include <io.h>           // _close, _read, _write (instead of unistd.h)
-#	include <sys/types.h>    // basic types
-#	include <sys/stat.h>     // file status
-#	include <sys/utime.h>    // _utime(), _utimbuf
+#	include <winsock2.h>  // sockets, basic networking
+#	include <ws2tcpip.h>  // getaddrinfo, inet_pton, etc.
+#	include <windows.h>   // general Windows API, timeval replacement
+#	include <io.h>        // _close, _read, _write (instead of unistd.h)
+#	include <sys/types.h> // basic types
+#	include <sys/stat.h>  // file status
+#	include <sys/utime.h> // _utime(), _utimbuf
 
-#	define write(f, b, c)  write((f), (b), (unsigned int)(c))
+#	define write(f, b, c) write((f), (b), (unsigned int)(c))
 #endif
 
 #include <cstdio>
@@ -69,6 +69,48 @@ static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session)
 	return rc;
 }
 
+static void kbd_callback(const char* name, int name_len,
+	const char* instruction, int instruction_len, int num_prompts,
+	const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+	LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract)
+{
+	(void)name;
+	(void)name_len;
+	(void)instruction;
+	(void)instruction_len;
+	(void)prompts;
+
+	// only expects 1 prompt, which is the password for user
+	if (num_prompts != 1) return;
+
+	SftpWatch_t* ctx = static_cast<SftpWatch_t*>(*abstract);
+
+	responses[0].text   = strdup(ctx->password.c_str());
+	responses[0].length = ctx->password.size();
+}
+
+static int32_t prv_auth_password(SftpWatch_t* ctx)
+{
+	int32_t rc = LIBSSH2_ERROR_EAGAIN;
+
+	do {
+		if (ctx->use_keyboard) {
+			rc = libssh2_userauth_keyboard_interactive_ex(ctx->session,
+				ctx->username.c_str(), ctx->username.size(), &kbd_callback);
+		} else {
+			rc = libssh2_userauth_password(
+				ctx->session, ctx->username.c_str(), ctx->password.c_str());
+		}
+	} while (rc == LIBSSH2_ERROR_EAGAIN);
+
+	if (rc) {
+		fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
+			ctx->username.c_str());
+	}
+
+	return rc;
+}
+
 int32_t SftpHelper::connect(SftpWatch_t* ctx)
 {
 	int32_t rc;
@@ -78,7 +120,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		WSADATA wsadata;
 
 		rc = WSAStartup(MAKEWORD(2, 0), &wsadata);
-		if(rc) {
+		if (rc) {
 			fprintf(stderr, "WSAStartup failed with error: %d\n", rc);
 			return 1;
 		}
@@ -128,8 +170,11 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 	// NOTE: always forgot this. FREE getaddrinfo res AFTER USE
 	freeaddrinfo(res);
 
-	/* Create a session instance */
-	ctx->session = libssh2_session_init();
+	/* Create a session instance
+	 * using extended API to set SftpWatch_t context as abstract. This way we
+	 * can access the context from callback
+	 * */
+	ctx->session = libssh2_session_init_ex(NULL, NULL, NULL, ctx);
 	if (!ctx->session) {
 		fprintf(stderr, "Could not initialize SSH session.\n");
 		return -1;
@@ -183,7 +228,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			== LIBSSH2_ERROR_EAGAIN);
 
 		if (rc) {
-			char* errmsg;
+			char*   errmsg;
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
@@ -192,10 +237,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			return -1;
 		}
 	} else if (!ctx->password.empty()) {
-		while ((rc = libssh2_userauth_password(
-					ctx->session, ctx->username.c_str(), ctx->password.c_str()))
-			== LIBSSH2_ERROR_EAGAIN);
-
+		rc = prv_auth_password(ctx);
 		if (rc) {
 			fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
 				ctx->username.c_str());
@@ -224,7 +266,7 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, const char* remote_path)
 		ctx->sftp_handle = libssh2_sftp_opendir(ctx->sftp_session, remote_path);
 
 		if (!ctx->sftp_handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			char* errmsg;
+			char*   errmsg;
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
