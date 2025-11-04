@@ -6,7 +6,7 @@ Having some fun with [Node-API](https://nodejs.org/api/n-api.html) and [node-add
 
 # Prerequisites
 
-Building this library requires: 
+Building this library requires:
 
 1. C++ compiler
 2. cmake (since I use cmake-js)
@@ -51,7 +51,7 @@ For the libraries, use **vcpkg**:
 ```shell
 vcpkg install openssl libssh2 zlib
 ```
-NOTE: I am not very familiar with building on Windows. I installed the libraries system-wide to mimic the Linux experience. 
+NOTE: I am not very familiar with building on Windows. I installed the libraries system-wide to mimic the Linux experience.
 
 You can read how I prepared my Windows environment in [this note](https://gitlab.com/-/snippets/4901502)
 
@@ -73,6 +73,7 @@ Configuration object for `sftp-watch` used to establish a connection and manage 
 | **password** | `string` | Yes *(if `privkey` is not provided)* | Password for authentication. Ignored when key-based authentication is used. |
 | **privkey** | `string` | Yes *(if `password` is not provided)* | Path to private key for key-based authentication. |
 | **pubkey** | `string` | Yes *(if `privkey` is provided)* | Path to public key for key-based authentication. |
+| **use_keyboard** | `bool` | No *(default = true)* | Use keyboard interactive to send password. |
 | **timeout** | `number` | No *(default = 60 seconds)* | Connection timeout in seconds. |
 | **delayMs** | `number` | No *(default = 1000 ms)* | Delay between checks in milliseconds. |
 | **maxErrCount** | `number` | No *(default = 3)* | Number of consecutive errors before restarting the connection. |
@@ -116,7 +117,7 @@ Establishes a connection to the remote SFTP target.
 - **config** - [`Config`](#config) object.
 
 #### Returns
-- A **connection ID** if the connection is successfully established.  
+- A **connection ID** if the connection is successfully established.
 - Throws an **Error** if the configuration is invalid or the connection cannot be made.
 
 ---
@@ -126,11 +127,11 @@ Establishes a connection to the remote SFTP target.
 Starts the synchronization process using an active connection.
 
 #### Parameters
-- **conId** - `number`, the connection ID returned by [`connect`](#connectconfig).  
+- **conId** - `number`, the connection ID returned by [`connect`](#connectconfig).
 - **syncCb** - `Function`, the callback function to handle file sync events.
 
 #### Returns
-- `true` if the sync process is successfully started.  
+- `true` if the sync process is successfully started.
 - Throws an **Error** if parameters are invalid.
 
 ---
@@ -143,7 +144,7 @@ Stops the synchronization process for an active connection.
 - **conId** - `number`, the connection ID associated with the active sync process.
 
 #### Returns
-- `undefined`.  
+- `undefined`.
 - Throws an **Error** if parameters are invalid.
 
 ---
@@ -184,8 +185,6 @@ I created this module out of curiosity, so several limitations were intentionall
 - Only one-direction synchronization is supported, from remote to local.
 
 - Only single-level synchronization is implemented. Files inside subdirectories are not synchronized.
-
-- Password authentication does exist in SSH/SFTP, but many SSH servers that appear to support ordinary password authentication actually have it disabled and use keyboard-interactive authentication instead. Keyboard-interactive authentication is not supported.
 
 - Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file. Although the final result remains identical between remote and local, this may cause confusion since the 'modified' event keeps triggering until the remote writing process is finished.
 
