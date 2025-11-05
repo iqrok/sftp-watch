@@ -19,14 +19,7 @@
 #define EVT_NAME_NEW "new"
 #define EVT_NAME_MOD "mod"
 
-typedef struct EvtFile_s {
-	bool        status = false;
-	const char* name;
-	DirItem_t*  file;
-} EvtFile_t;
-
-static uint32_t          ids          = 0;
-static std::atomic<bool> sync_cb_done = false;
+static uint32_t ids = 0;
 
 static std::map<uint32_t, SftpWatch_t*> watchers;
 
@@ -58,24 +51,27 @@ static void finalizer_sync_dir(
 }
 
 static void sync_dir_tsfn_cb(
-	Napi::Env env, Napi::Function js_cb, EvtFile_t* item)
+	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx)
 {
 	Napi::Object obj = Napi::Object::New(env);
 
-	obj.Set("evt", Napi::String::New(env, item->name));
-	obj.Set("name", Napi::String::New(env, item->file->name));
-	obj.Set("type", Napi::String::New(env, std::string(1, item->file->type)));
-	obj.Set("size", Napi::Number::New(env, item->file->attrs.filesize));
-	obj.Set("time", Napi::Number::New(env, item->file->attrs.mtime * 1e3));
-	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(item->file->attrs)));
+	obj.Set("evt", Napi::String::New(env, ctx->ev_file->name));
+	obj.Set("name", Napi::String::New(env, ctx->ev_file->file->name));
+	obj.Set("type",
+		Napi::String::New(env, std::string(1, ctx->ev_file->file->type)));
+	obj.Set("size", Napi::Number::New(env, ctx->ev_file->file->attrs.filesize));
+	obj.Set(
+		"time", Napi::Number::New(env, ctx->ev_file->file->attrs.mtime * 1e3));
+	obj.Set("perm",
+		Napi::Number::New(env, SNOD_FILE_PERM(ctx->ev_file->file->attrs)));
 
 	// don't forget to delete the data, since we used dynamic allocation
-	delete item;
+	delete ctx->ev_file;
 
 	js_cb.Call({ obj });
 
-	// tell the loop that the js callback is finished after data is freed
-	sync_cb_done = true;
+	// release the lock
+	ctx->sem.release();
 }
 
 static void thread_sync_dir(SftpWatch_t* ctx)
@@ -84,8 +80,11 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		PairFileDet_t current;
 		DirItem_t     item;
 
+		RemoteDir_t dir;
+		dir.path = ctx->remote_path;
+
 		// open remote dir first
-		int32_t rc = SftpHelper::open_dir(ctx, ctx->remote_path.c_str());
+		int32_t rc = SftpHelper::open_dir(ctx, &dir);
 		if (rc) {
 			if (++ctx->err_count >= ctx->max_err_count) {
 				connect_or_reconnect(ctx);
@@ -100,7 +99,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 		ctx->err_count = 0;
 
 		// read the opened directory
-		while ((rc = SftpHelper::read_dir(ctx, &item)) != 0) {
+		while ((rc = SftpHelper::read_dir(&dir, &item)) != 0) {
 			current[std::string(item.name)] = item;
 		}
 
@@ -138,18 +137,17 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			} break;
 			}
 
-			EvtFile_t* sync_evt = new EvtFile_t;
-			sync_evt->name      = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
-			sync_evt->file      = &now;
+			ctx->ev_file       = new EvtFile_t;
+			ctx->ev_file->name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
+			ctx->ev_file->file = &now;
 
 			// BlockingCall() should never fail, since max queue size is 0
-			sync_cb_done = false;
-			if (ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb) != napi_ok) {
+			if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
 				Napi::Error::Fatal("new file err", "BlockingCall() failed");
 			}
 
 			// wait until the BlockingCall is finished
-			while (!sync_cb_done) DELAY_US(10);
+			ctx->sem.acquire();
 		}
 
 		for (const auto& [key, val] : ctx->last_files) {
@@ -172,22 +170,23 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			} break;
 			}
 
-			EvtFile_t* sync_evt = new EvtFile_t;
-			sync_evt->name      = EVT_NAME_DEL;
-			sync_evt->file      = &old;
+			ctx->ev_file       = new EvtFile_t;
+			ctx->ev_file->name = EVT_NAME_DEL;
+			ctx->ev_file->file = &old;
 
-			sync_cb_done = false;
-			if (ctx->tsfn.BlockingCall(sync_evt, sync_dir_tsfn_cb) != napi_ok) {
+			if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
 				Napi::Error::Fatal("del file err", "BlockingCall() failed");
 			}
 
-			// wait until the BlockingCall is finished, the reset the flag
-			while (!sync_cb_done);
-			sync_cb_done = false;
+			// wait until the BlockingCall is finished, then lock
+			ctx->sem.acquire();
 		}
 
 		// update last data
 		ctx->last_files = current;
+
+		// close opened dir
+		SftpHelper::close_dir(ctx, &dir);
 
 		DELAY_MS(ctx->delay_ms);
 	}
