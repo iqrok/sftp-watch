@@ -539,10 +539,9 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 #endif
 
 #ifdef _WIN32
+	// NOTE: If the CreateDirectoryA succeeds, the return value is nonzero.
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
-	if (rc) {
-		fprintf(stderr, "Failed create directory: %d\n", GetLastError());
-	}
+	if (!rc) fprintf(stderr, "Failed create directory: %d\n", GetLastError());
 #endif
 
 	return rc;
