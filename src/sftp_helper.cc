@@ -375,7 +375,7 @@ void SftpHelper::disconnect(SftpWatch_t* ctx)
 
 	if (ctx->sock != LIBSSH2_INVALID_SOCKET) {
 		// NOTE: this is how to prevent name conflict with extern "C"
-		::shutdown(ctx->sock, 2);
+		::shutdown(ctx->sock, SHUT_RDWR);
 		LIBSSH2_SOCKET_CLOSE(ctx->sock);
 	}
 }
