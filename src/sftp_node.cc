@@ -15,9 +15,15 @@
 #define DELAY_MS(ms)                                                           \
 	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
 
-#define EVT_NAME_DEL "del"
-#define EVT_NAME_NEW "new"
-#define EVT_NAME_MOD "mod"
+enum EventFile_e {
+	EVT_FILE_DEL,
+	EVT_FILE_NEW,
+	EVT_FILE_MOD,
+};
+
+#define EVT_STR_DEL "del"
+#define EVT_STR_NEW "new"
+#define EVT_STR_MOD "mod"
 
 #define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
 #define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
@@ -59,7 +65,23 @@ static void sync_dir_tsfn_cb(
 {
 	Napi::Object obj = Napi::Object::New(env);
 
-	obj.Set("evt", Napi::String::New(env, ctx->ev_file->name));
+	switch (ctx->ev_file->ev) {
+
+	case EVT_FILE_DEL: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_DEL));
+	} break;
+
+	case EVT_FILE_NEW: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_NEW));
+	} break;
+
+	case EVT_FILE_MOD: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_MOD));
+	} break;
+
+	default: break;
+	}
+
 	obj.Set("name", Napi::String::New(env, ctx->ev_file->file->name));
 	obj.Set("type",
 		Napi::String::New(env, std::string(1, ctx->ev_file->file->type)));
@@ -79,11 +101,11 @@ static void sync_dir_tsfn_cb(
 }
 
 static void sync_dir_js_call(
-	SftpWatch_t* ctx, DirItem_t* file, const char* ev_name)
+	SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 {
 	// need to use heap, avoiding data lost when race condition occurs
 	ctx->ev_file       = new EvtFile_t;
-	ctx->ev_file->name = ev_name;
+	ctx->ev_file->ev   = ev;
 	ctx->ev_file->file = file;
 
 	// BlockingCall() should never fail, since max queue size is 0
@@ -95,99 +117,105 @@ static void sync_dir_js_call(
 	ctx->sem.acquire();
 }
 
-static void thread_sync_dir(SftpWatch_t* ctx)
+static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 {
-	while (!ctx->is_stopped) {
-		PairFileDet_t current;
-		DirItem_t     item;
+	PairFileDet_t current;
+	DirItem_t     item;
 
-		RemoteDir_t dir;
-		dir.path = ctx->remote_path;
-
-		// open remote dir first
-		int32_t rc = SftpHelper::open_dir(ctx, &dir);
-		if (rc) {
-			if (++ctx->err_count >= ctx->max_err_count) {
-				connect_or_reconnect(ctx);
-				ctx->err_count = 0;
-				continue;
-			}
-
-			DELAY_MS(ctx->delay_ms);
-			continue;
+	// open remote dir first
+	int32_t rc = SftpHelper::open_dir(ctx, &dir);
+	if (rc) {
+		if (++ctx->err_count >= ctx->max_err_count) {
+			connect_or_reconnect(ctx);
+			ctx->err_count = 0;
+			return -1;
 		}
-
-		ctx->err_count = 0;
-
-		// read the opened directory
-		while ((rc = SftpHelper::read_dir(&dir, &item)) != 0) {
-			if (item.name == "." || item.name == "..") continue;
-
-			std::string key = item.name;
-			current[key]    = item;
-
-			// Check for new or modified files
-			bool is_mod = false;
-			bool is_new = !ctx->last_files.contains(key);
-
-			if (!is_new) {
-				is_mod = !SNOD_FILE_SIZE_SAME(ctx->last_files[key], item)
-					|| !SNOD_FILE_MTIME_SAME(ctx->last_files[key], item);
-			}
-
-			if (!(is_new || is_mod)) continue;
-
-			// only write regular file
-			switch (item.type) {
-
-			case IS_REG_FILE: {
-				// TODO: multiple files at once with single connection
-				SftpHelper::sync_file_remote(ctx, &item);
-			} break;
-
-			// TODO: sync directory and its tree, until reached max depth
-			case IS_DIR: {
-				SftpHelper::mkdir_local(ctx, &item);
-			} break;
-
-			default: {
-				// nothing to do for now
-			} break;
-			}
-
-			sync_dir_js_call(ctx, &item, is_new ? EVT_NAME_NEW : EVT_NAME_MOD);
-		}
-
-		for (const auto& [key, val] : ctx->last_files) {
-			if (current.contains(key)) continue;
-
-			DirItem_t old = val;
-
-			switch (old.type) {
-
-			case IS_DIR: {
-				// TODO: check if dir is removed or renamed
-			} break;
-
-			/*
-			 * NOTE: any file type should be safe enough to be remove directly,
-			 *       right?
-			 * */
-			default: {
-				SftpHelper::remove_local(ctx, old.name);
-			} break;
-			}
-
-			sync_dir_js_call(ctx, &old, EVT_NAME_DEL);
-		}
-
-		// update last data
-		ctx->last_files = current;
-
-		// close opened dir
-		SftpHelper::close_dir(ctx, &dir);
 
 		DELAY_MS(ctx->delay_ms);
+		return -1;
+	}
+
+	ctx->err_count = 0;
+
+	// read the opened directory
+	while ((rc = SftpHelper::read_dir(dir, &item)) != 0) {
+		if (item.name == "." || item.name == "..") continue;
+
+		std::string key = item.name;
+		current[key]    = item;
+
+		// Check for new or modified files
+		bool is_mod = false;
+		bool is_new = !ctx->last_files.contains(key);
+
+		if (!is_new) {
+			is_mod = !SNOD_FILE_SIZE_SAME(ctx->last_files[key], item)
+				|| !SNOD_FILE_MTIME_SAME(ctx->last_files[key], item);
+		}
+
+		if (!(is_new || is_mod)) continue;
+
+		// only write regular file
+		switch (item.type) {
+
+		case IS_REG_FILE: {
+			// TODO: multiple files at once with single connection
+			SftpHelper::sync_file_remote(ctx, &item);
+		} break;
+
+		// TODO: sync directory and its tree, until reached max depth
+		case IS_DIR: {
+			SftpHelper::mkdir_local(ctx, &item);
+		} break;
+
+		default: {
+			// nothing to do for now
+		} break;
+		}
+
+		sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
+	}
+
+	for (const auto& [key, val] : ctx->last_files) {
+		if (current.contains(key)) continue;
+
+		DirItem_t old = val;
+
+		switch (old.type) {
+
+		case IS_DIR: {
+			// TODO: check if dir is removed or renamed
+		} break;
+
+		/*
+		 * NOTE: any file type should be safe enough to be remove directly,
+		 *       right?
+		 * */
+		default: {
+			SftpHelper::remove_local(ctx, old.name);
+		} break;
+		}
+
+		sync_dir_js_call(ctx, &old, EVT_FILE_DEL);
+	}
+
+	// update last data
+	ctx->last_files = current;
+
+	// close opened dir
+	SftpHelper::close_dir(ctx, &dir);
+
+	return 0;
+}
+
+static void sync_dir_thread(SftpWatch_t* ctx)
+{
+	while (!ctx->is_stopped) {
+		for (const auto& [key, val] : ctx->dirs) {
+			RemoteDir_t dir = val;
+			sync_dir_loop(ctx, dir);
+			DELAY_MS(ctx->delay_ms);
+		}
 	}
 
 	// outside loop means no more operation to do. Cleanup the connection
@@ -206,6 +234,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 
 	Napi::Object arg = info[0].As<Napi::Object>();
 
+	RemoteDir_t dir;
 	std::string host;
 	std::string username;
 	std::string pubkey;
@@ -252,6 +281,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		}
 
 		remote_path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
+		dir.path    = remote_path;
 	} else {
 		Napi::TypeError::New(env, "'remotePath' is undefined")
 			.ThrowAsJavaScriptException();
@@ -314,6 +344,8 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	ctx->remote_path  = remote_path;
 	ctx->local_path   = local_path;
 	ctx->is_connected = false;
+
+	ctx->dirs[ctx->remote_path] = dir;
 
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
@@ -393,7 +425,7 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 			  (void*)nullptr      // Finalizer data
 		  );
 
-	ctx->thread = std::thread(thread_sync_dir, ctx);
+	ctx->thread = std::thread(sync_dir_thread, ctx);
 
 	return Napi::Boolean::New(env, true);
 }

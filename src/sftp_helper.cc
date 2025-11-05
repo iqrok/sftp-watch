@@ -316,13 +316,13 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 	return 0;
 }
 
-int32_t SftpHelper::read_dir(RemoteDir_t* dir, DirItem_t* file)
+int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
 {
 	int32_t rc = 0;
 
 	char filename[SFTP_FILENAME_MAX_LEN];
 	while ((rc = libssh2_sftp_readdir(
-				dir->handle, filename, sizeof(filename), &file->attrs))
+				dir.handle, filename, sizeof(filename), &file->attrs))
 		== LIBSSH2_ERROR_EAGAIN);
 
 	// there's a record

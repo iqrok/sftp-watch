@@ -47,7 +47,7 @@ typedef std::map<std::string, DirItem_t> PairFileDet_t;
 
 struct EvtFile_s {
 	bool        status = false;
-	const char* name;
+	uint8_t     ev;
 	DirItem_t*  file;
 };
 
@@ -89,13 +89,15 @@ struct SftpWatch_s {
 	struct sockaddr_in sin;
 	const char*        fingerprint;
 
-	RemoteDir_t   dir_handle;
 	PairFileDet_t last_files;
 
 	Napi::Promise::Deferred  deferred;
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
+
+	// collection of directory that should be iterated
+	std::map<std::string, RemoteDir_t> dirs;
 
 	// pointer to event data for js callback
 	EvtFile_t* ev_file;
