@@ -119,8 +119,10 @@ static void sync_dir_js_call(
 
 static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 {
-	PairFileDet_t current;
 	DirItem_t     item;
+	PairFileDet_t current;
+	// we're gonna need pair for the directory. So, create it anyway use []
+	PairFileDet_t& tmp = ctx->last_files[dir.path];
 
 	// open remote dir first
 	int32_t rc = SftpHelper::open_dir(ctx, &dir);
@@ -139,21 +141,23 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 
 	// read the opened directory
 	while ((rc = SftpHelper::read_dir(dir, &item)) != 0) {
-		if (item.name == "." || item.name == "..") continue;
+		if (item.name.empty()) continue;
 
 		std::string key = item.name;
 		current[key]    = item;
 
 		// Check for new or modified files
 		bool is_mod = false;
-		bool is_new = !ctx->last_files.contains(key);
+		bool is_new = !tmp.contains(key);
 
 		if (!is_new) {
-			is_mod = !SNOD_FILE_SIZE_SAME(ctx->last_files[key], item)
-				|| !SNOD_FILE_MTIME_SAME(ctx->last_files[key], item);
+			is_mod = !SNOD_FILE_SIZE_SAME(tmp.at(key), item)
+				|| !SNOD_FILE_MTIME_SAME(tmp.at(key), item);
 		}
 
-		if (!(is_new || is_mod)) continue;
+		if (!is_new && !is_mod) continue;
+
+		tmp[key] = item;
 
 		// only write regular file
 		switch (item.type) {
@@ -166,6 +170,19 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		// TODO: sync directory and its tree, until reached max depth
 		case IS_DIR: {
 			SftpHelper::mkdir_local(ctx, &item);
+
+
+			RemoteDir_t sub;
+			sub.rela = item.name;
+
+			size_t pos = item.name.find_last_of(SNOD_PATH_SEP);
+			if (pos != std::string::npos) {
+				sub.path = dir.path + SNOD_SEP + item.name.substr(pos + 1);
+			} else {
+				sub.path = dir.path + SNOD_SEP + item.name;
+			}
+
+			ctx->dirs[item.name] = sub;
 		} break;
 
 		default: {
@@ -176,7 +193,7 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
 	}
 
-	for (const auto& [key, val] : ctx->last_files) {
+	for (const auto& [key, val] : tmp) {
 		if (current.contains(key)) continue;
 
 		DirItem_t old = val;
@@ -196,11 +213,16 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		} break;
 		}
 
+		printf("DELETING '%s' => '%s'\n", key.c_str(), val.name.c_str());
+		tmp.erase(key);
+
 		sync_dir_js_call(ctx, &old, EVT_FILE_DEL);
+
+		//~ printf("DONE\n============\n");
 	}
 
 	// update last data
-	ctx->last_files = current;
+	//~ ctx->last_files[dir.path] = current;
 
 	// close opened dir
 	SftpHelper::close_dir(ctx, &dir);

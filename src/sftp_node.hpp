@@ -25,7 +25,9 @@
 #	define SFTP_FILENAME_MAX_LEN 512
 #endif
 
+#define SNOD_PATH_SEP        '/'
 #define SNOD_FILE_PERM(attr) (attr.permissions & 0777)
+#define SNOD_SEP             (std::string("/"))
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -60,6 +62,7 @@ struct DirItem_s {
 
 struct RemoteDir_s {
 	bool        is_opened = false;
+	std::string rela;
 	std::string path;
 
 	LIBSSH2_SFTP_HANDLE* handle;
@@ -89,15 +92,15 @@ struct SftpWatch_s {
 	struct sockaddr_in sin;
 	const char*        fingerprint;
 
-	PairFileDet_t last_files;
-
 	Napi::Promise::Deferred  deferred;
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
 
 	// collection of directory that should be iterated
-	std::map<std::string, RemoteDir_t> dirs;
+	std::map<std::string, RemoteDir_t>   dirs;
+	std::map<std::string, PairFileDet_t> last_files;
+	//~ PairFileDet_t last_files;
 
 	// pointer to event data for js callback
 	EvtFile_t* ev_file;

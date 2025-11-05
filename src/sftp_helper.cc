@@ -303,9 +303,9 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n",
-				dir->path.c_str(), errcode,
-				errmsg ? errmsg : "Unknown error message");
+			fprintf(stderr, "Unable to open dir '%s' '%s' with SFTP [%d] %s %s:%d\n",
+				dir->path.c_str(), dir->rela.c_str(), errcode,
+				errmsg ? errmsg : "Unknown error message", __FILE__, __LINE__);
 
 			return errcode;
 		}
@@ -327,8 +327,19 @@ int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
 
 	// there's a record
 	if (rc > 0) {
-		file->name = std::string(filename);
+		std::string name(filename);
+
+		if (name == "." || name == "..") {
+			file->name = "";
+			file->type = IS_INVALID;
+			file->attrs.filesize = 0;
+			file->attrs.mtime = 0;
+			return 1;
+		}
+
 		file->type = SftpHelper::get_filetype(file);
+		file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
+
 		return 1;
 	}
 
@@ -393,8 +404,8 @@ void SftpHelper::shutdown()
 
 int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 {
-	std::string remote_file = ctx->remote_path + std::string("/") + file->name;
-	std::string local_file  = ctx->local_path + std::string("/") + file->name;
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
 
@@ -405,7 +416,8 @@ int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 		if (!handle) {
 			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
-				fprintf(stderr, "Unable to open file with SFTP: %ld\n",
+				fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+					remote_file.c_str(),
 					libssh2_sftp_last_error(ctx->sftp_session));
 				return -1;
 			} else {
@@ -416,8 +428,8 @@ int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 	} while (!handle);
 
 	if (!handle) {
-		fprintf(stderr, "Unable to open file with SFTP: %ld\n",
-			libssh2_sftp_last_error(ctx->sftp_session));
+			fprintf(stderr, "Unable 2nd to open file '%s' with SFTP: %ld\n",
+				remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
 		return -1;
 	}
 
@@ -506,7 +518,7 @@ int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 {
-	std::string local_file = ctx->local_path + std::string("/") + filename;
+	std::string local_file = ctx->local_path + SNOD_SEP + filename;
 
 	if (remove(local_file.c_str())) {
 		fprintf(stderr, "Err %d: %s '%s'\n", errno, strerror(errno),
@@ -519,14 +531,18 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 
 int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 {
-	std::string local_dir = ctx->local_path + std::string("/") + file->name;
+	std::string local_dir = ctx->local_path + SNOD_SEP + file->name;
 	struct stat st;
 	int32_t     rc = 0;
+
+	printf("creating directory '%s'\n", local_dir.c_str());
 
 	// check if path exists
 	if (stat(local_dir.c_str(), &st) == 0) {
 		// existing path is directory. Return success
 		if (S_ISDIR(st.st_mode)) return 0;
+
+		printf("directory Exist '%s'\n", local_dir.c_str());
 
 		// TODO: what to do when path exist but not a directory
 		return -1;
@@ -535,7 +551,20 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 	// create directory if doesn't exist
 #ifdef _POSIX_VERSION
 	rc = mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
-	if (rc) fprintf(stderr, "Failed create directory: %d\n", errno);
+	if (rc) {
+		fprintf(stderr, "Failed create directory: %d\n", errno);
+		return rc;
+	}
+
+	struct utimbuf times = {
+		.actime  = (time_t)file->attrs.atime,
+		.modtime = (time_t)file->attrs.mtime,
+	};
+
+	// set modified & access time time to match remote
+	if (utime(local_dir.c_str(), &times)) {
+		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
+	}
 #endif
 
 #ifdef _WIN32
@@ -543,6 +572,7 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
 	if (!rc) fprintf(stderr, "Failed create directory: %d\n", GetLastError());
 #endif
+	printf("CREATED directory '%s'\n", local_dir.c_str());
 
 	return rc;
 }
