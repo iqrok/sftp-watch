@@ -19,6 +19,10 @@
 #define EVT_NAME_NEW "new"
 #define EVT_NAME_MOD "mod"
 
+#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
+#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
+#define SNOD_SEC2MS(s)               ((s) * 1000)
+
 static uint32_t ids = 0;
 
 static std::map<uint32_t, SftpWatch_t*> watchers;
@@ -60,8 +64,8 @@ static void sync_dir_tsfn_cb(
 	obj.Set("type",
 		Napi::String::New(env, std::string(1, ctx->ev_file->file->type)));
 	obj.Set("size", Napi::Number::New(env, ctx->ev_file->file->attrs.filesize));
-	obj.Set(
-		"time", Napi::Number::New(env, ctx->ev_file->file->attrs.mtime * 1e3));
+	obj.Set("time",
+		Napi::Number::New(env, SNOD_SEC2MS(ctx->ev_file->file->attrs.mtime)));
 	obj.Set("perm",
 		Napi::Number::New(env, SNOD_FILE_PERM(ctx->ev_file->file->attrs)));
 
@@ -72,6 +76,23 @@ static void sync_dir_tsfn_cb(
 
 	// release the lock
 	ctx->sem.release();
+}
+
+static void sync_dir_js_call(
+	SftpWatch_t* ctx, DirItem_t* file, const char* ev_name)
+{
+	// need to use heap, avoiding data lost when race condition occurs
+	ctx->ev_file       = new EvtFile_t;
+	ctx->ev_file->name = ev_name;
+	ctx->ev_file->file = file;
+
+	// BlockingCall() should never fail, since max queue size is 0
+	if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
+		Napi::Error::Fatal("new file err", "BlockingCall() failed");
+	}
+
+	// wait until the BlockingCall is finished
+	ctx->sem.acquire();
 }
 
 static void thread_sync_dir(SftpWatch_t* ctx)
@@ -100,36 +121,33 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 
 		// read the opened directory
 		while ((rc = SftpHelper::read_dir(&dir, &item)) != 0) {
-			current[std::string(item.name)] = item;
-		}
+			if (item.name == "." || item.name == "..") continue;
 
-		// Check for new or modified files
-		for (const auto& [key, val] : current) {
-			if (val.name == "." || val.name == "..") continue;
+			std::string key = item.name;
+			current[key]    = item;
 
-			DirItem_t now    = current[key];
-			bool      is_mod = false;
-			bool      is_new = !ctx->last_files.contains(key);
+			// Check for new or modified files
+			bool is_mod = false;
+			bool is_new = !ctx->last_files.contains(key);
 
 			if (!is_new) {
-				is_mod = (ctx->last_files[key].attrs.filesize
-							 != now.attrs.filesize)
-					|| (ctx->last_files[key].attrs.mtime != now.attrs.mtime);
+				is_mod = !SNOD_FILE_SIZE_SAME(ctx->last_files[key], item)
+					|| !SNOD_FILE_MTIME_SAME(ctx->last_files[key], item);
 			}
 
 			if (!(is_new || is_mod)) continue;
 
 			// only write regular file
-			switch (now.type) {
+			switch (item.type) {
 
 			case IS_REG_FILE: {
 				// TODO: multiple files at once with single connection
-				SftpHelper::sync_file_remote(ctx, &now);
+				SftpHelper::sync_file_remote(ctx, &item);
 			} break;
 
 			// TODO: sync directory and its tree, until reached max depth
 			case IS_DIR: {
-				SftpHelper::mkdir_local(ctx, &now);
+				SftpHelper::mkdir_local(ctx, &item);
 			} break;
 
 			default: {
@@ -137,17 +155,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			} break;
 			}
 
-			ctx->ev_file       = new EvtFile_t;
-			ctx->ev_file->name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
-			ctx->ev_file->file = &now;
-
-			// BlockingCall() should never fail, since max queue size is 0
-			if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
-				Napi::Error::Fatal("new file err", "BlockingCall() failed");
-			}
-
-			// wait until the BlockingCall is finished
-			ctx->sem.acquire();
+			sync_dir_js_call(ctx, &item, is_new ? EVT_NAME_NEW : EVT_NAME_MOD);
 		}
 
 		for (const auto& [key, val] : ctx->last_files) {
@@ -170,16 +178,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 			} break;
 			}
 
-			ctx->ev_file       = new EvtFile_t;
-			ctx->ev_file->name = EVT_NAME_DEL;
-			ctx->ev_file->file = &old;
-
-			if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
-				Napi::Error::Fatal("del file err", "BlockingCall() failed");
-			}
-
-			// wait until the BlockingCall is finished, then lock
-			ctx->sem.acquire();
+			sync_dir_js_call(ctx, &old, EVT_NAME_DEL);
 		}
 
 		// update last data
