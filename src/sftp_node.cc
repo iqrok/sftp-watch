@@ -79,7 +79,8 @@ static void sync_dir_tsfn_cb(
 		obj.Set("evt", Napi::String::New(env, EVT_STR_MOD));
 	} break;
 
-	default: break;
+	default:
+		break;
 	}
 
 	obj.Set("name", Napi::String::New(env, ctx->ev_file->file->name));
@@ -100,8 +101,7 @@ static void sync_dir_tsfn_cb(
 	ctx->sem.release();
 }
 
-static void sync_dir_js_call(
-	SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
+static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 {
 	// need to use heap, avoiding data lost when race condition occurs
 	ctx->ev_file       = new EvtFile_t;
@@ -119,8 +119,8 @@ static void sync_dir_js_call(
 
 static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 {
-	DirItem_t     item;
-	PairFileDet_t current;
+	DirItem_t      item;
+	PairFileDet_t  current;
 	// we're gonna need pair for the directory. So, create it anyway use []
 	PairFileDet_t& tmp = ctx->last_files[dir.path];
 
@@ -171,7 +171,6 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		case IS_DIR: {
 			SftpHelper::mkdir_local(ctx, &item);
 
-
 			RemoteDir_t sub;
 			sub.rela = item.name;
 
@@ -193,10 +192,17 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
 	}
 
-	for (const auto& [key, val] : tmp) {
-		if (current.contains(key)) continue;
+	/*
+	 * NOTE: no increment at the end. it will be handled based on condition
+	 *       below
+	 * */
+	for (auto it = tmp.cbegin(); it != tmp.cend();) {
+		if (current.contains(it->first)) {
+			++it;
+			continue;
+		}
 
-		DirItem_t old = val;
+		DirItem_t old = it->second;
 
 		switch (old.type) {
 
@@ -204,19 +210,21 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 			// TODO: check if dir is removed or renamed
 		} break;
 
-		/*
-		 * NOTE: any file type should be safe enough to be remove directly,
-		 *       right?
-		 * */
+			/*
+			 * NOTE: any file type should be safe enough to be remove directly,
+			 *       right?
+			 * */
 		default: {
 			SftpHelper::remove_local(ctx, old.name);
 		} break;
 		}
 
-		printf("DELETING '%s' => '%s'\n", key.c_str(), val.name.c_str());
-		tmp.erase(key);
+		printf("DELETING '%s' => '%s'\n", it->first.c_str(),
+			it->second.name.c_str());
 
 		sync_dir_js_call(ctx, &old, EVT_FILE_DEL);
+
+		it = tmp.erase(it);
 
 		//~ printf("DONE\n============\n");
 	}

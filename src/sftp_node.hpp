@@ -48,9 +48,9 @@ typedef struct RemoteDir_s RemoteDir_t;
 typedef std::map<std::string, DirItem_t> PairFileDet_t;
 
 struct EvtFile_s {
-	bool        status = false;
-	uint8_t     ev;
-	DirItem_t*  file;
+	bool       status = false;
+	uint8_t    ev;
+	DirItem_t* file;
 };
 
 struct DirItem_s {

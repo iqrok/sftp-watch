@@ -303,7 +303,8 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			fprintf(stderr, "Unable to open dir '%s' '%s' with SFTP [%d] %s %s:%d\n",
+			fprintf(stderr,
+				"Unable to open dir '%s' '%s' with SFTP [%d] %s %s:%d\n",
 				dir->path.c_str(), dir->rela.c_str(), errcode,
 				errmsg ? errmsg : "Unknown error message", __FILE__, __LINE__);
 
@@ -330,10 +331,10 @@ int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
 		std::string name(filename);
 
 		if (name == "." || name == "..") {
-			file->name = "";
-			file->type = IS_INVALID;
+			file->name           = "";
+			file->type           = IS_INVALID;
 			file->attrs.filesize = 0;
-			file->attrs.mtime = 0;
+			file->attrs.mtime    = 0;
 			return 1;
 		}
 
@@ -428,8 +429,8 @@ int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 	} while (!handle);
 
 	if (!handle) {
-			fprintf(stderr, "Unable 2nd to open file '%s' with SFTP: %ld\n",
-				remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
+		fprintf(stderr, "Unable 2nd to open file '%s' with SFTP: %ld\n",
+			remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
 		return -1;
 	}
 
