@@ -10,9 +10,11 @@
 		"CMakeLists.txt"
 	],
 	"scripts": {
+		"sample": "node sample/index.js",
 		"build:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1",
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
+		"rebuild:dbg": "cmake-js rebuild --CDCMAKE_BUILD_TYPE=Debug",
 		"rebuild": "cmake-js rebuild",
 		"postinstall": "npm run compile"
 	},
