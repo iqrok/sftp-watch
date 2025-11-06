@@ -121,6 +121,37 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 	return rc;
 }
 
+static LIBSSH2_SFTP_HANDLE* prv_open_file(
+	SftpWatch_t* ctx, const char* remote_path)
+{
+	LIBSSH2_SFTP_HANDLE* handle = NULL;
+
+	// try to open remote file and wait until socket ready
+	do {
+		handle = libssh2_sftp_open(
+			ctx->sftp_session, remote_path, LIBSSH2_FXF_READ, 0);
+
+		if (!handle) {
+			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
+				fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+					remote_path, libssh2_sftp_last_error(ctx->sftp_session));
+				return NULL;
+			} else {
+				// non-blocking open, now we wait until socket is ready
+				waitsocket(ctx->sock, ctx->session);
+			}
+		}
+	} while (!handle);
+
+	if (!handle) {
+		fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+			remote_path, libssh2_sftp_last_error(ctx->sftp_session));
+		return NULL;
+	}
+
+	return handle;
+}
+
 int32_t SftpHelper::connect(SftpWatch_t* ctx)
 {
 	int32_t rc;
@@ -405,36 +436,46 @@ void SftpHelper::shutdown()
 	is_inited = false;
 }
 
-int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
+{
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
+	struct stat st;
+
+	int32_t rc     = 0;
+	char mem[4096] = { 0 };
+
+	while(FN_RC_EAGAIN(rc, libssh2_sftp_readlink(
+		ctx->sftp_session, remote_file.c_str(), mem, sizeof(mem))));
+
+	if (rc < 0) {
+		fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+			remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
+		return rc;
+	}
+
+	// check if symlonk exists and remove it
+	if ((rc = lstat(local_file.c_str(), &st)) == 0) {
+		if (S_ISLNK(st.st_mode)) {
+			SftpHelper::remove_local(ctx, file->name.c_str());
+		}
+	}
+
+	if ((rc = symlink(mem, local_file.c_str()))) {
+		fprintf(stderr, "Failed to create symlink '%s' with SFTP: %d\n",
+			local_file.c_str(), rc);
+		perror("SYMLINK FAILED");
+	}
+
+	return rc;
+}
+
+int32_t SftpHelper::copy_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 {
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 
-	LIBSSH2_SFTP_HANDLE* handle = NULL;
-
-	// try to open remote file and wait until socket ready
-	do {
-		handle = libssh2_sftp_open(
-			ctx->sftp_session, remote_file.c_str(), LIBSSH2_FXF_READ, 0);
-
-		if (!handle) {
-			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
-				fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
-					remote_file.c_str(),
-					libssh2_sftp_last_error(ctx->sftp_session));
-				return -1;
-			} else {
-				// non-blocking open, now we wait until socket is ready
-				waitsocket(ctx->sock, ctx->session);
-			}
-		}
-	} while (!handle);
-
-	if (!handle) {
-		fprintf(stderr, "Unable 2nd to open file '%s' with SFTP: %ld\n",
-			remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
-		return -1;
-	}
+	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str());
 
 	int32_t err      = 0;
 	FILE*   fd_local = fopen(local_file.c_str(), "wb");
