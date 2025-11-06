@@ -176,7 +176,11 @@ const syncCb = (info) => {
 
 sync(conId, syncCb);
 
-// stop(conId); // Stop if needed:
+// stop monitoring on ctrl + c;
+process.on('SIGINT', async () => {
+   await stop(conId);
+   process.exit(0);
+});
 ```
 
 # Limitations

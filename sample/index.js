@@ -44,9 +44,9 @@ try {
 	if (!connectId) throw 'Failed to connect to SFTP Server';
 
 	process.on('SIGINT', async () => {
-		await SftpWatch.stop(connectId);
-		setTimeout(() => process.exit(0), 10_000);
-	});
+			await SftpWatch.stop(connectId);
+			process.exit(0);
+		});
 
 	SftpWatch.sync(connectId, (file) => {
 			const dt  = new Date(file.time);
