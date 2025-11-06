@@ -29,11 +29,13 @@
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
+#include "sftp_helper.hpp"
+
 #include <cstdio>
 #include <cstring>
 #include <string>
 
-#include "sftp_helper.hpp"
+#include <filesystem> // for removing directory
 
 static bool is_inited = false;
 
@@ -536,14 +538,19 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 	struct stat st;
 	int32_t     rc = 0;
 
-	printf("creating directory '%s'\n", local_dir.c_str());
+	struct utimbuf times = {
+		.actime  = (time_t)file->attrs.atime,
+		.modtime = (time_t)file->attrs.mtime,
+	};
 
 	// check if path exists
 	if (stat(local_dir.c_str(), &st) == 0) {
 		// existing path is directory. Return success
-		if (S_ISDIR(st.st_mode)) return 0;
-
-		printf("directory Exist '%s'\n", local_dir.c_str());
+		if (S_ISDIR(st.st_mode)) {
+			// set modified & access time time to match remote
+			utime(local_dir.c_str(), &times);
+			return 0;
+		}
 
 		// TODO: what to do when path exist but not a directory
 		return -1;
@@ -557,11 +564,6 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 		return rc;
 	}
 
-	struct utimbuf times = {
-		.actime  = (time_t)file->attrs.atime,
-		.modtime = (time_t)file->attrs.mtime,
-	};
-
 	// set modified & access time time to match remote
 	if (utime(local_dir.c_str(), &times)) {
 		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
@@ -573,7 +575,19 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
 	if (!rc) fprintf(stderr, "Failed create directory: %d\n", GetLastError());
 #endif
-	printf("CREATED directory '%s'\n", local_dir.c_str());
 
 	return rc;
+}
+
+/*
+ * NOTE: using C++ filesystem to remove directory and its contents
+ *       ref https://stackoverflow.com/a/50051546/3258981
+ * */
+void SftpHelper::rmdir_local(SftpWatch_t* ctx, std::string dirname)
+{
+	std::filesystem::path dirpath(ctx->local_path + SNOD_SEP + dirname);
+
+	if (!std::filesystem::is_directory(dirpath)) return;
+
+	std::filesystem::remove_all(dirpath);
 }
