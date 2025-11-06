@@ -68,14 +68,15 @@ static void sync_dir_finalizer(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
 	(void)finalizeData; // unused. btw it's a nullptr
-	watchers.erase(ctx->id);
 
 	ctx->thread.join();
-	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 
+	watchers.erase(ctx->id);
 	delete ctx;
 
 	if (watchers.empty()) SftpHelper::shutdown();
+
+	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 }
 
 static void sync_dir_tsfn_cb(
@@ -513,7 +514,7 @@ Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	SftpWatch_t* ctx = watchers.at(id);
 	ctx->is_stopped  = true;
 
-	return env.Undefined();
+	return ctx->deferred.Promise();
 }
 
 static Napi::Object init_napi(Napi::Env env, Napi::Object exports)
