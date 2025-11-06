@@ -119,21 +119,15 @@ static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 
 static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 {
-	DirItem_t      item;
-	PairFileDet_t  current;
 	// we're gonna need pair for the directory. So, create it anyway use []
 	PairFileDet_t& tmp = ctx->last_files[dir.path];
+	PairFileDet_t  current;
+	DirItem_t      item;
 
 	// open remote dir first
 	int32_t rc = SftpHelper::open_dir(ctx, &dir);
 	if (rc) {
-		if (++ctx->err_count >= ctx->max_err_count) {
-			connect_or_reconnect(ctx);
-			ctx->err_count = 0;
-			return -1;
-		}
-
-		DELAY_MS(ctx->delay_ms);
+		++ctx->err_count;
 		return -1;
 	}
 
@@ -159,7 +153,6 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 
 		tmp[key] = item;
 
-		// only write regular file
 		switch (item.type) {
 
 		case IS_REG_FILE: {
@@ -171,6 +164,7 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		case IS_DIR: {
 			SftpHelper::mkdir_local(ctx, &item);
 
+			// TODO: check subdirectory depth before add it into list
 			RemoteDir_t sub;
 			sub.rela = item.name;
 
@@ -207,30 +201,26 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 		switch (old.type) {
 
 		case IS_DIR: {
-			// TODO: check if dir is removed or renamed
+			/*
+			 * Pushing back into waiting list to be processed later when dir
+			 * loop has been finished
+			 * */
+			ctx->undirs.push_back(old.name);
 		} break;
 
+		default: {
 			/*
 			 * NOTE: any file type should be safe enough to be remove directly,
 			 *       right?
 			 * */
-		default: {
 			SftpHelper::remove_local(ctx, old.name);
 		} break;
 		}
 
-		printf("DELETING '%s' => '%s'\n", it->first.c_str(),
-			it->second.name.c_str());
-
 		sync_dir_js_call(ctx, &old, EVT_FILE_DEL);
 
 		it = tmp.erase(it);
-
-		//~ printf("DONE\n============\n");
 	}
-
-	// update last data
-	//~ ctx->last_files[dir.path] = current;
 
 	// close opened dir
 	SftpHelper::close_dir(ctx, &dir);
@@ -244,8 +234,32 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		for (const auto& [key, val] : ctx->dirs) {
 			RemoteDir_t dir = val;
 			sync_dir_loop(ctx, dir);
-			DELAY_MS(ctx->delay_ms);
 		}
+
+		// check if any directoy is removed
+		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end(); ) {
+			/*
+			 * Remove local directory recursively and remove the key from remote
+			 * dirs map.
+			 *
+			 * FIXME: There's possibilty that the dir is still iterated once
+			 *        more after the deletion from map.
+			 *
+			 * TODO: check if dir is removed or renamed
+			 * */
+			SftpHelper::rmdir_local(ctx, *it);
+			ctx->dirs.erase(*it);
+
+			// remove the vector itself and go to the next iterator
+			it = ctx->undirs.erase(it);
+		}
+
+		if (ctx->err_count >= ctx->max_err_count) {
+			connect_or_reconnect(ctx);
+			ctx->err_count = 0;
+		}
+
+		DELAY_MS(ctx->delay_ms);
 	}
 
 	// outside loop means no more operation to do. Cleanup the connection

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <vector>
 #include <semaphore>
 #include <thread>
 
@@ -100,7 +101,7 @@ struct SftpWatch_s {
 	// collection of directory that should be iterated
 	std::map<std::string, RemoteDir_t>   dirs;
 	std::map<std::string, PairFileDet_t> last_files;
-	//~ PairFileDet_t last_files;
+	std::vector<std::string>             undirs;
 
 	// pointer to event data for js callback
 	EvtFile_t* ev_file;
