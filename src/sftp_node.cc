@@ -1,7 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <map>
+#include <unordered_map>
 #include <thread>
 #include <vector>
 
@@ -48,10 +48,11 @@ static void sync_dir_tsfn_cb(
  * Keep both as static as the needs must be in this file only. Tracking globals
  * accross files is confusing.
  *
- * NOTE: probably should use vector instead of map
+ * NOTE: using unordered_map as it's should be small enough and access is
+ *       generally faster.
  * */
-static uint32_t                         ids = 0;
-static std::map<uint32_t, SftpWatch_t*> watchers;
+static uint32_t                                   ids = 0;
+static std::unordered_map<uint32_t, SftpWatch_t*> watchers;
 
 /* ************************* Implementations ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx)
@@ -174,9 +175,13 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 
 		switch (item.type) {
 
+		case IS_SYMLINK: {
+			SftpHelper::copy_symlink_remote(ctx, &item);
+		} break;
+
 		case IS_REG_FILE: {
 			// TODO: multiple files at once with single connection
-			SftpHelper::sync_file_remote(ctx, &item);
+			SftpHelper::copy_file_remote(ctx, &item);
 		} break;
 
 		// TODO: sync directory and its tree, until reached max depth
