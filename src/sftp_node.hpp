@@ -3,9 +3,9 @@
 
 #include <cstdint>
 #include <map>
-#include <vector>
 #include <semaphore>
 #include <thread>
+#include <vector>
 
 #include <napi.h>
 

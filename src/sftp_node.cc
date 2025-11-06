@@ -9,11 +9,20 @@
 
 #include "sftp_helper.hpp"
 #include "sftp_node.hpp"
+#include "sftp_node_api.hpp"
+
+#define EVT_STR_DEL "del"
+#define EVT_STR_NEW "new"
+#define EVT_STR_MOD "mod"
 
 #define DELAY_US(us)                                                           \
 	std::this_thread::sleep_for(std::chrono::microseconds((us)))
 #define DELAY_MS(ms)                                                           \
 	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
+
+#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
+#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
+#define SNOD_SEC2MS(s)               ((s) * 1000)
 
 enum EventFile_e {
 	EVT_FILE_DEL,
@@ -21,21 +30,30 @@ enum EventFile_e {
 	EVT_FILE_MOD,
 };
 
-#define EVT_STR_DEL "del"
-#define EVT_STR_NEW "new"
-#define EVT_STR_MOD "mod"
+/* ************************* Forward Declare ******************************* */
+static int32_t connect_or_reconnect(SftpWatch_t* ctx);
+static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
+static int     sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir);
+static void    sync_dir_thread(SftpWatch_t* ctx);
+static void    sync_dir_finalizer(
+	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
+static void sync_dir_tsfn_cb(
+	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx);
 
-#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
-#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
-#define SNOD_SEC2MS(s)               ((s) * 1000)
-
-static uint32_t ids = 0;
-
+/*
+ * to store watcher contexts.
+ * - `ids` is to hold the last set id, always be incremented to avoid same id
+ * - `watchers` is to hold all individual contexts itself as a map
+ *
+ * Keep both as static as the needs must be in this file only. Tracking globals
+ * accross files is confusing.
+ *
+ * NOTE: probably should use vector instead of map
+ * */
+static uint32_t                         ids = 0;
 static std::map<uint32_t, SftpWatch_t*> watchers;
 
-static Napi::Value js_connect(const Napi::CallbackInfo& info);
-static Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
-
+/* ************************* Implementations ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 {
 	if (ctx->is_connected) SftpHelper::disconnect(ctx);
@@ -46,7 +64,7 @@ static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 	return 0;
 }
 
-static void finalizer_sync_dir(
+static void sync_dir_finalizer(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
 	(void)finalizeData; // unused. btw it's a nullptr
@@ -237,7 +255,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		}
 
 		// check if any directoy is removed
-		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end(); ) {
+		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end();) {
 			/*
 			 * Remove local directory recursively and remove the key from remote
 			 * dirs map.
@@ -266,7 +284,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 	SftpHelper::disconnect(ctx);
 }
 
-static Napi::Value js_connect(const Napi::CallbackInfo& info)
+Napi::Value js_connect(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -430,7 +448,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	return Napi::Number::New(env, ctx->id);
 }
 
-static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
+Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -465,7 +483,7 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 			  0,                  // Max queue_si size (0 = unlimited).
 			  1,                  // Initial thread count
 			  ctx,                // Context,
-			  finalizer_sync_dir, // Finalizer
+			  sync_dir_finalizer, // Finalizer
 			  (void*)nullptr      // Finalizer data
 		  );
 
@@ -474,7 +492,7 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 	return Napi::Boolean::New(env, true);
 }
 
-static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
+Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
