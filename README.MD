@@ -67,7 +67,7 @@ Configuration object for `sftp-watch` used to establish a connection and manage 
 |-----|------|------------|-------------|
 | **host** | `string` | Yes | Remote target's IP address or domain name. |
 | **port** | `number` | No *(default = 22)* | Remote target's SFTP port (default is usually 22). |
-| **remotePath** | `string` | Yes | Absolute path of the remote directory to be synced. |
+| **remotePath** | `string` | Yes | Absolute path of the remote root directory to be synced. |
 | **localPath** | `string` | Yes | Local directory where synced files are stored. |
 | **username** | `string` | Yes | Username for authentication. |
 | **password** | `string` | Yes *(if `privkey` is not provided)* | Password for authentication. Ignored when key-based authentication is used. |
@@ -78,6 +78,7 @@ Configuration object for `sftp-watch` used to establish a connection and manage 
 | **delayMs** | `number` | No *(default = 1000 ms)* | Delay between checks in milliseconds. |
 | **maxErrCount** | `number` | No *(default = 3)* | Number of consecutive errors before restarting the connection. |
 
+> **WARNING:** Both `remotePath` and `localPath` must exist.
 > **Note:** Use either password-based **or** key-based authentication. If both are supplied, key-based authentication takes precedence.
 
 ---
@@ -175,7 +176,11 @@ const syncCb = (info) => {
 
 sync(conId, syncCb);
 
-// stop(conId); // Stop if needed:
+// stop monitoring on ctrl + c;
+process.on('SIGINT', async () => {
+   await stop(conId);
+   process.exit(0);
+});
 ```
 
 # Limitations
@@ -184,9 +189,11 @@ I created this module out of curiosity, so several limitations were intentionall
 
 - Only one-direction synchronization is supported, from remote to local.
 
-- Only single-level synchronization is implemented. Files inside subdirectories are not synchronized.
+- ~~Only single-level synchronization is implemented. Files inside subdirectories are not synchronized.~~ Sub-direcory and all its contents are synchronized. But no depth limit has been implemented yet.
 
 - Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file. Although the final result remains identical between remote and local, this may cause confusion since the 'modified' event keeps triggering until the remote writing process is finished.
+
+- Renaming and moving a file/directory is handled as deletion -> creation. It would be a problem if the file size is large or the directory contains many files
 
 - Error handling is still limited, particularly regarding failed connections and failed directory or file reads.
 

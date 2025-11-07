@@ -29,11 +29,13 @@
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
+#include "sftp_helper.hpp"
+
 #include <cstdio>
 #include <cstring>
 #include <string>
 
-#include "sftp_helper.hpp"
+#include <filesystem> // for removing directory
 
 static bool is_inited = false;
 
@@ -117,6 +119,37 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 	}
 
 	return rc;
+}
+
+static LIBSSH2_SFTP_HANDLE* prv_open_file(
+	SftpWatch_t* ctx, const char* remote_path)
+{
+	LIBSSH2_SFTP_HANDLE* handle = NULL;
+
+	// try to open remote file and wait until socket ready
+	do {
+		handle = libssh2_sftp_open(
+			ctx->sftp_session, remote_path, LIBSSH2_FXF_READ, 0);
+
+		if (!handle) {
+			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
+				fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+					remote_path, libssh2_sftp_last_error(ctx->sftp_session));
+				return NULL;
+			} else {
+				// non-blocking open, now we wait until socket is ready
+				waitsocket(ctx->sock, ctx->session);
+			}
+		}
+	} while (!handle);
+
+	if (!handle) {
+		fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+			remote_path, libssh2_sftp_last_error(ctx->sftp_session));
+		return NULL;
+	}
+
+	return handle;
 }
 
 int32_t SftpHelper::connect(SftpWatch_t* ctx)
@@ -303,9 +336,10 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			fprintf(stderr, "Unable to open dir '%s' with SFTP [%d] %s\n",
-				dir->path.c_str(), errcode,
-				errmsg ? errmsg : "Unknown error message");
+			fprintf(stderr,
+				"Unable to open dir '%s' '%s' with SFTP [%d] %s %s:%d\n",
+				dir->path.c_str(), dir->rela.c_str(), errcode,
+				errmsg ? errmsg : "Unknown error message", __FILE__, __LINE__);
 
 			return errcode;
 		}
@@ -316,19 +350,30 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 	return 0;
 }
 
-int32_t SftpHelper::read_dir(RemoteDir_t* dir, DirItem_t* file)
+int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
 {
 	int32_t rc = 0;
 
 	char filename[SFTP_FILENAME_MAX_LEN];
 	while ((rc = libssh2_sftp_readdir(
-				dir->handle, filename, sizeof(filename), &file->attrs))
+				dir.handle, filename, sizeof(filename), &file->attrs))
 		== LIBSSH2_ERROR_EAGAIN);
 
 	// there's a record
 	if (rc > 0) {
-		file->name = std::string(filename);
+		std::string name(filename);
+
+		if (name == "." || name == "..") {
+			file->name           = "";
+			file->type           = IS_INVALID;
+			file->attrs.filesize = 0;
+			file->attrs.mtime    = 0;
+			return 1;
+		}
+
 		file->type = SftpHelper::get_filetype(file);
+		file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
+
 		return 1;
 	}
 
@@ -391,35 +436,46 @@ void SftpHelper::shutdown()
 	is_inited = false;
 }
 
-int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
 {
-	std::string remote_file = ctx->remote_path + std::string("/") + file->name;
-	std::string local_file  = ctx->local_path + std::string("/") + file->name;
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
+	struct stat st;
 
-	LIBSSH2_SFTP_HANDLE* handle = NULL;
+	int32_t rc     = 0;
+	char mem[4096] = { 0 };
 
-	// try to open remote file and wait until socket ready
-	do {
-		handle = libssh2_sftp_open(
-			ctx->sftp_session, remote_file.c_str(), LIBSSH2_FXF_READ, 0);
+	while(FN_RC_EAGAIN(rc, libssh2_sftp_readlink(
+		ctx->sftp_session, remote_file.c_str(), mem, sizeof(mem))));
 
-		if (!handle) {
-			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
-				fprintf(stderr, "Unable to open file with SFTP: %ld\n",
-					libssh2_sftp_last_error(ctx->sftp_session));
-				return -1;
-			} else {
-				// non-blocking open, now we wait until socket is ready
-				waitsocket(ctx->sock, ctx->session);
-			}
-		}
-	} while (!handle);
-
-	if (!handle) {
-		fprintf(stderr, "Unable to open file with SFTP: %ld\n",
-			libssh2_sftp_last_error(ctx->sftp_session));
-		return -1;
+	if (rc < 0) {
+		fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+			remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
+		return rc;
 	}
+
+	// check if symlonk exists and remove it
+	if ((rc = lstat(local_file.c_str(), &st)) == 0) {
+		if (S_ISLNK(st.st_mode)) {
+			SftpHelper::remove_local(ctx, file->name.c_str());
+		}
+	}
+
+	if ((rc = symlink(mem, local_file.c_str()))) {
+		fprintf(stderr, "Failed to create symlink '%s' with SFTP: %d\n",
+			local_file.c_str(), rc);
+		perror("SYMLINK FAILED");
+	}
+
+	return rc;
+}
+
+int32_t SftpHelper::copy_file_remote(SftpWatch_t* ctx, DirItem_t* file)
+{
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
+
+	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str());
 
 	int32_t err      = 0;
 	FILE*   fd_local = fopen(local_file.c_str(), "wb");
@@ -506,7 +562,7 @@ int32_t SftpHelper::sync_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 {
-	std::string local_file = ctx->local_path + std::string("/") + filename;
+	std::string local_file = ctx->local_path + SNOD_SEP + filename;
 
 	if (remove(local_file.c_str())) {
 		fprintf(stderr, "Err %d: %s '%s'\n", errno, strerror(errno),
@@ -519,14 +575,23 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 
 int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 {
-	std::string local_dir = ctx->local_path + std::string("/") + file->name;
+	std::string local_dir = ctx->local_path + SNOD_SEP + file->name;
 	struct stat st;
 	int32_t     rc = 0;
+
+	struct utimbuf times = {
+		.actime  = (time_t)file->attrs.atime,
+		.modtime = (time_t)file->attrs.mtime,
+	};
 
 	// check if path exists
 	if (stat(local_dir.c_str(), &st) == 0) {
 		// existing path is directory. Return success
-		if (S_ISDIR(st.st_mode)) return 0;
+		if (S_ISDIR(st.st_mode)) {
+			// set modified & access time time to match remote
+			utime(local_dir.c_str(), &times);
+			return 0;
+		}
 
 		// TODO: what to do when path exist but not a directory
 		return -1;
@@ -535,7 +600,15 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 	// create directory if doesn't exist
 #ifdef _POSIX_VERSION
 	rc = mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
-	if (rc) fprintf(stderr, "Failed create directory: %d\n", errno);
+	if (rc) {
+		fprintf(stderr, "Failed create directory: %d\n", errno);
+		return rc;
+	}
+
+	// set modified & access time time to match remote
+	if (utime(local_dir.c_str(), &times)) {
+		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
+	}
 #endif
 
 #ifdef _WIN32
@@ -545,4 +618,17 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 #endif
 
 	return rc;
+}
+
+/*
+ * NOTE: using C++ filesystem to remove directory and its contents
+ *       ref https://stackoverflow.com/a/50051546/3258981
+ * */
+void SftpHelper::rmdir_local(SftpWatch_t* ctx, std::string dirname)
+{
+	std::filesystem::path dirpath(ctx->local_path + SNOD_SEP + dirname);
+
+	if (!std::filesystem::is_directory(dirpath)) return;
+
+	std::filesystem::remove_all(dirpath);
 }

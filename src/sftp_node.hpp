@@ -5,6 +5,7 @@
 #include <map>
 #include <semaphore>
 #include <thread>
+#include <vector>
 
 #include <napi.h>
 
@@ -25,7 +26,9 @@
 #	define SFTP_FILENAME_MAX_LEN 512
 #endif
 
+#define SNOD_PATH_SEP        '/'
 #define SNOD_FILE_PERM(attr) (attr.permissions & 0777)
+#define SNOD_SEP             (std::string("/"))
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -46,9 +49,9 @@ typedef struct RemoteDir_s RemoteDir_t;
 typedef std::map<std::string, DirItem_t> PairFileDet_t;
 
 struct EvtFile_s {
-	bool        status = false;
-	const char* name;
-	DirItem_t*  file;
+	bool       status = false;
+	uint8_t    ev;
+	DirItem_t* file;
 };
 
 struct DirItem_s {
@@ -60,6 +63,7 @@ struct DirItem_s {
 
 struct RemoteDir_s {
 	bool        is_opened = false;
+	std::string rela;
 	std::string path;
 
 	LIBSSH2_SFTP_HANDLE* handle;
@@ -89,13 +93,15 @@ struct SftpWatch_s {
 	struct sockaddr_in sin;
 	const char*        fingerprint;
 
-	RemoteDir_t   dir_handle;
-	PairFileDet_t last_files;
-
 	Napi::Promise::Deferred  deferred;
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
+
+	// collection of directory that should be iterated
+	std::map<std::string, RemoteDir_t>   dirs;
+	std::map<std::string, PairFileDet_t> last_files;
+	std::vector<std::string>             undirs;
 
 	// pointer to event data for js callback
 	EvtFile_t* ev_file;

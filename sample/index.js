@@ -5,9 +5,13 @@ const config = require('./config.js');
 config.localPath = __dirname + '/test';
 
 const fs = require('fs');
-if (!fs.existsSync(config.localPath)) fs.mkdirSync(config.localPath)
+if (fs.existsSync(config.localPath)) {
+	fs.rmSync(config.localPath, { recursive: true, });
+}
 
-function formatBytes(size, useBinary = false) {
+fs.mkdirSync(config.localPath);
+
+function formatBytes(size, useBinary = true) {
 	const units = useBinary
 		? ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 		: ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -39,6 +43,11 @@ try {
 	// should be a number and > 0
 	if (!connectId) throw 'Failed to connect to SFTP Server';
 
+	process.on('SIGINT', async () => {
+			await SftpWatch.stop(connectId);
+			process.exit(0);
+		});
+
 	SftpWatch.sync(connectId, (file) => {
 			const dt  = new Date(file.time);
 			const now = new Date();
@@ -49,7 +58,7 @@ try {
 				+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
 				+ `${file.perm.toString(8)} `
 				+ `${formatBytes(file.size)} `
-				+ `\x1b[1m\x1b[33m${file.name}\x1b[0m `
+				+ `\x1b[1m\x1b[${file.type == 'f' ? 33 : 36}m${file.name}\x1b[0m `
 			);
 		});
 } catch (error) {

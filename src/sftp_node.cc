@@ -1,7 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <map>
+#include <unordered_map>
 #include <thread>
 #include <vector>
 
@@ -9,23 +9,52 @@
 
 #include "sftp_helper.hpp"
 #include "sftp_node.hpp"
+#include "sftp_node_api.hpp"
+
+#define EVT_STR_DEL "del"
+#define EVT_STR_NEW "new"
+#define EVT_STR_MOD "mod"
 
 #define DELAY_US(us)                                                           \
 	std::this_thread::sleep_for(std::chrono::microseconds((us)))
 #define DELAY_MS(ms)                                                           \
 	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
 
-#define EVT_NAME_DEL "del"
-#define EVT_NAME_NEW "new"
-#define EVT_NAME_MOD "mod"
+#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
+#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
+#define SNOD_SEC2MS(s)               ((s) * 1000)
 
-static uint32_t ids = 0;
+enum EventFile_e {
+	EVT_FILE_DEL,
+	EVT_FILE_NEW,
+	EVT_FILE_MOD,
+};
 
-static std::map<uint32_t, SftpWatch_t*> watchers;
+/* ************************* Forward Declare ******************************* */
+static int32_t connect_or_reconnect(SftpWatch_t* ctx);
+static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
+static int     sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir);
+static void    sync_dir_thread(SftpWatch_t* ctx);
+static void    sync_dir_finalizer(
+	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
+static void sync_dir_tsfn_cb(
+	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx);
 
-static Napi::Value js_connect(const Napi::CallbackInfo& info);
-static Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
+/*
+ * to store watcher contexts.
+ * - `ids` is to hold the last set id, always be incremented to avoid same id
+ * - `watchers` is to hold all individual contexts itself as a map
+ *
+ * Keep both as static as the needs must be in this file only. Tracking globals
+ * accross files is confusing.
+ *
+ * NOTE: using unordered_map as it's should be small enough and access is
+ *       generally faster.
+ * */
+static uint32_t                                   ids = 0;
+static std::unordered_map<uint32_t, SftpWatch_t*> watchers;
 
+/* ************************* Implementations ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 {
 	if (ctx->is_connected) SftpHelper::disconnect(ctx);
@@ -36,18 +65,19 @@ static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 	return 0;
 }
 
-static void finalizer_sync_dir(
+static void sync_dir_finalizer(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
 	(void)finalizeData; // unused. btw it's a nullptr
-	watchers.erase(ctx->id);
 
 	ctx->thread.join();
-	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 
+	watchers.erase(ctx->id);
 	delete ctx;
 
 	if (watchers.empty()) SftpHelper::shutdown();
+
+	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 }
 
 static void sync_dir_tsfn_cb(
@@ -55,13 +85,30 @@ static void sync_dir_tsfn_cb(
 {
 	Napi::Object obj = Napi::Object::New(env);
 
-	obj.Set("evt", Napi::String::New(env, ctx->ev_file->name));
+	switch (ctx->ev_file->ev) {
+
+	case EVT_FILE_DEL: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_DEL));
+	} break;
+
+	case EVT_FILE_NEW: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_NEW));
+	} break;
+
+	case EVT_FILE_MOD: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_MOD));
+	} break;
+
+	default:
+		break;
+	}
+
 	obj.Set("name", Napi::String::New(env, ctx->ev_file->file->name));
 	obj.Set("type",
 		Napi::String::New(env, std::string(1, ctx->ev_file->file->type)));
 	obj.Set("size", Napi::Number::New(env, ctx->ev_file->file->attrs.filesize));
-	obj.Set(
-		"time", Napi::Number::New(env, ctx->ev_file->file->attrs.mtime * 1e3));
+	obj.Set("time",
+		Napi::Number::New(env, SNOD_SEC2MS(ctx->ev_file->file->attrs.mtime)));
 	obj.Set("perm",
 		Napi::Number::New(env, SNOD_FILE_PERM(ctx->ev_file->file->attrs)));
 
@@ -74,119 +121,167 @@ static void sync_dir_tsfn_cb(
 	ctx->sem.release();
 }
 
-static void thread_sync_dir(SftpWatch_t* ctx)
+static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 {
-	while (!ctx->is_stopped) {
-		PairFileDet_t current;
-		DirItem_t     item;
+	// need to use heap, avoiding data lost when race condition occurs
+	ctx->ev_file       = new EvtFile_t;
+	ctx->ev_file->ev   = ev;
+	ctx->ev_file->file = file;
 
-		RemoteDir_t dir;
-		dir.path = ctx->remote_path;
+	// BlockingCall() should never fail, since max queue size is 0
+	if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
+		Napi::Error::Fatal("new file err", "BlockingCall() failed");
+	}
 
-		// open remote dir first
-		int32_t rc = SftpHelper::open_dir(ctx, &dir);
-		if (rc) {
-			if (++ctx->err_count >= ctx->max_err_count) {
-				connect_or_reconnect(ctx);
-				ctx->err_count = 0;
-				continue;
+	// wait until the BlockingCall is finished
+	ctx->sem.acquire();
+}
+
+static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
+{
+	// we're gonna need pair for the directory. So, create it anyway use []
+	PairFileDet_t& tmp = ctx->last_files[dir.path];
+	PairFileDet_t  current;
+	DirItem_t      item;
+
+	// open remote dir first
+	int32_t rc = SftpHelper::open_dir(ctx, &dir);
+	if (rc) {
+		++ctx->err_count;
+		return -1;
+	}
+
+	ctx->err_count = 0;
+
+	// read the opened directory
+	while ((rc = SftpHelper::read_dir(dir, &item)) != 0) {
+		if (item.name.empty()) continue;
+
+		std::string key = item.name;
+		current[key]    = item;
+
+		// Check for new or modified files
+		bool is_mod = false;
+		bool is_new = !tmp.contains(key);
+
+		if (!is_new) {
+			is_mod = !SNOD_FILE_SIZE_SAME(tmp.at(key), item)
+				|| !SNOD_FILE_MTIME_SAME(tmp.at(key), item);
+		}
+
+		if (!is_new && !is_mod) continue;
+
+		tmp[key] = item;
+
+		switch (item.type) {
+
+		case IS_SYMLINK: {
+			SftpHelper::copy_symlink_remote(ctx, &item);
+		} break;
+
+		case IS_REG_FILE: {
+			// TODO: multiple files at once with single connection
+			SftpHelper::copy_file_remote(ctx, &item);
+		} break;
+
+		// TODO: sync directory and its tree, until reached max depth
+		case IS_DIR: {
+			SftpHelper::mkdir_local(ctx, &item);
+
+			// TODO: check subdirectory depth before add it into list
+			RemoteDir_t sub;
+			sub.rela = item.name;
+
+			size_t pos = item.name.find_last_of(SNOD_PATH_SEP);
+			if (pos != std::string::npos) {
+				sub.path = dir.path + SNOD_SEP + item.name.substr(pos + 1);
+			} else {
+				sub.path = dir.path + SNOD_SEP + item.name;
 			}
 
-			DELAY_MS(ctx->delay_ms);
+			ctx->dirs[item.name] = sub;
+		} break;
+
+		default: {
+			// nothing to do for now
+		} break;
+		}
+
+		sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
+	}
+
+	/*
+	 * NOTE: no increment at the end. it will be handled based on condition
+	 *       below
+	 * */
+	for (auto it = tmp.cbegin(); it != tmp.cend();) {
+		if (current.contains(it->first)) {
+			++it;
 			continue;
 		}
 
-		ctx->err_count = 0;
+		DirItem_t old = it->second;
 
-		// read the opened directory
-		while ((rc = SftpHelper::read_dir(&dir, &item)) != 0) {
-			current[std::string(item.name)] = item;
-		}
+		switch (old.type) {
 
-		// Check for new or modified files
-		for (const auto& [key, val] : current) {
-			if (val.name == "." || val.name == "..") continue;
+		case IS_DIR: {
+			/*
+			 * Pushing back into waiting list to be processed later when dir
+			 * loop has been finished
+			 * */
+			ctx->undirs.push_back(old.name);
+		} break;
 
-			DirItem_t now    = current[key];
-			bool      is_mod = false;
-			bool      is_new = !ctx->last_files.contains(key);
-
-			if (!is_new) {
-				is_mod = (ctx->last_files[key].attrs.filesize
-							 != now.attrs.filesize)
-					|| (ctx->last_files[key].attrs.mtime != now.attrs.mtime);
-			}
-
-			if (!(is_new || is_mod)) continue;
-
-			// only write regular file
-			switch (now.type) {
-
-			case IS_REG_FILE: {
-				// TODO: multiple files at once with single connection
-				SftpHelper::sync_file_remote(ctx, &now);
-			} break;
-
-			// TODO: sync directory and its tree, until reached max depth
-			case IS_DIR: {
-				SftpHelper::mkdir_local(ctx, &now);
-			} break;
-
-			default: {
-				// nothing to do for now
-			} break;
-			}
-
-			ctx->ev_file       = new EvtFile_t;
-			ctx->ev_file->name = is_new ? EVT_NAME_NEW : EVT_NAME_MOD;
-			ctx->ev_file->file = &now;
-
-			// BlockingCall() should never fail, since max queue size is 0
-			if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
-				Napi::Error::Fatal("new file err", "BlockingCall() failed");
-			}
-
-			// wait until the BlockingCall is finished
-			ctx->sem.acquire();
-		}
-
-		for (const auto& [key, val] : ctx->last_files) {
-			if (current.contains(key)) continue;
-
-			DirItem_t old = val;
-
-			switch (old.type) {
-
-			case IS_DIR: {
-				// TODO: check if dir is removed or renamed
-			} break;
-
+		default: {
 			/*
 			 * NOTE: any file type should be safe enough to be remove directly,
 			 *       right?
 			 * */
-			default: {
-				SftpHelper::remove_local(ctx, old.name);
-			} break;
-			}
-
-			ctx->ev_file       = new EvtFile_t;
-			ctx->ev_file->name = EVT_NAME_DEL;
-			ctx->ev_file->file = &old;
-
-			if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
-				Napi::Error::Fatal("del file err", "BlockingCall() failed");
-			}
-
-			// wait until the BlockingCall is finished, then lock
-			ctx->sem.acquire();
+			SftpHelper::remove_local(ctx, old.name);
+		} break;
 		}
 
-		// update last data
-		ctx->last_files = current;
+		sync_dir_js_call(ctx, &old, EVT_FILE_DEL);
 
-		// close opened dir
-		SftpHelper::close_dir(ctx, &dir);
+		it = tmp.erase(it);
+	}
+
+	// close opened dir
+	SftpHelper::close_dir(ctx, &dir);
+
+	return 0;
+}
+
+static void sync_dir_thread(SftpWatch_t* ctx)
+{
+	while (!ctx->is_stopped) {
+		for (const auto& [key, val] : ctx->dirs) {
+			RemoteDir_t dir = val;
+			sync_dir_loop(ctx, dir);
+		}
+
+		// check if any directoy is removed
+		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end();) {
+			/*
+			 * Remove local directory recursively and remove the key from remote
+			 * dirs map.
+			 *
+			 * FIXME: There's possibilty that the dir is still iterated once
+			 *        more after the deletion from map.
+			 *
+			 * TODO: check if dir is removed or renamed
+			 * */
+			SftpHelper::rmdir_local(ctx, *it);
+			ctx->dirs.erase(*it);
+
+			// remove the vector itself and go to the next iterator
+			it = ctx->undirs.erase(it);
+		}
+
+		if (ctx->err_count >= ctx->max_err_count) {
+			connect_or_reconnect(ctx);
+			ctx->err_count = 0;
+		}
 
 		DELAY_MS(ctx->delay_ms);
 	}
@@ -195,7 +290,7 @@ static void thread_sync_dir(SftpWatch_t* ctx)
 	SftpHelper::disconnect(ctx);
 }
 
-static Napi::Value js_connect(const Napi::CallbackInfo& info)
+Napi::Value js_connect(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -207,6 +302,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 
 	Napi::Object arg = info[0].As<Napi::Object>();
 
+	RemoteDir_t dir;
 	std::string host;
 	std::string username;
 	std::string pubkey;
@@ -253,6 +349,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 		}
 
 		remote_path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
+		dir.path    = remote_path;
 	} else {
 		Napi::TypeError::New(env, "'remotePath' is undefined")
 			.ThrowAsJavaScriptException();
@@ -316,6 +413,8 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	ctx->local_path   = local_path;
 	ctx->is_connected = false;
 
+	ctx->dirs[ctx->remote_path] = dir;
+
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
 		uint32_t tmp = arg.Get("port").As<Napi::Number>().Uint32Value();
@@ -355,7 +454,7 @@ static Napi::Value js_connect(const Napi::CallbackInfo& info)
 	return Napi::Number::New(env, ctx->id);
 }
 
-static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
+Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -390,16 +489,16 @@ static Napi::Value js_sync_dir(const Napi::CallbackInfo& info)
 			  0,                  // Max queue_si size (0 = unlimited).
 			  1,                  // Initial thread count
 			  ctx,                // Context,
-			  finalizer_sync_dir, // Finalizer
+			  sync_dir_finalizer, // Finalizer
 			  (void*)nullptr      // Finalizer data
 		  );
 
-	ctx->thread = std::thread(thread_sync_dir, ctx);
+	ctx->thread = std::thread(sync_dir_thread, ctx);
 
 	return Napi::Boolean::New(env, true);
 }
 
-static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
+Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -420,7 +519,7 @@ static Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	SftpWatch_t* ctx = watchers.at(id);
 	ctx->is_stopped  = true;
 
-	return env.Undefined();
+	return ctx->deferred.Promise();
 }
 
 static Napi::Object init_napi(Napi::Env env, Napi::Object exports)
