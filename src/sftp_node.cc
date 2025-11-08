@@ -1,8 +1,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <unordered_map>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <napi.h>
@@ -255,13 +255,15 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 static void sync_dir_thread(SftpWatch_t* ctx)
 {
 	while (!ctx->is_stopped) {
+		int32_t rc = 0;
 		for (const auto& [key, val] : ctx->dirs) {
 			RemoteDir_t dir = val;
-			sync_dir_loop(ctx, dir);
+			if ((rc = sync_dir_loop(ctx, dir))) break;
 		}
 
 		// check if any directoy is removed
-		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end();) {
+		for (auto it = ctx->undirs.begin();
+			rc == 0 && it != ctx->undirs.end();) {
 			/*
 			 * Remove local directory recursively and remove the key from remote
 			 * dirs map.
@@ -279,7 +281,13 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		}
 
 		if (ctx->err_count >= ctx->max_err_count) {
-			connect_or_reconnect(ctx);
+			int16_t reconnect_delay = ctx->delay_ms;
+			while (connect_or_reconnect(ctx)) {
+				if (reconnect_delay < ctx->timeout_sec) {
+					reconnect_delay += ctx->delay_ms;
+				}
+				DELAY_MS(reconnect_delay);
+			}
 			ctx->err_count = 0;
 		}
 
