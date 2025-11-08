@@ -114,7 +114,7 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 	} while (rc == LIBSSH2_ERROR_EAGAIN);
 
 	if (rc) {
-		fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
+		LOG_ERR("Authentication by password failed %d [%s].\n", rc,
 			ctx->username.c_str());
 	}
 
@@ -133,7 +133,7 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 
 		if (!handle) {
 			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
-				fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+				LOG_ERR("Unable to open file '%s' with SFTP: %ld\n",
 					remote_path, libssh2_sftp_last_error(ctx->sftp_session));
 				return NULL;
 			} else {
@@ -144,8 +144,8 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 	} while (!handle);
 
 	if (!handle) {
-		fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
-			remote_path, libssh2_sftp_last_error(ctx->sftp_session));
+		LOG_ERR("Unable to open file '%s' with SFTP: %ld\n", remote_path,
+			libssh2_sftp_last_error(ctx->sftp_session));
 		return NULL;
 	}
 
@@ -162,12 +162,12 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 
 		rc = WSAStartup(MAKEWORD(2, 0), &wsadata);
 		if (rc) {
-			fprintf(stderr, "WSAStartup failed with error: %d\n", rc);
+			LOG_ERR("WSAStartup failed with error: %d\n", rc);
 			return 1;
 		}
 #endif
 		if ((rc = libssh2_init(0)) != 0) {
-			fprintf(stderr, "libssh2 initialization failed (%d)\n", rc);
+			LOG_ERR("libssh2 initialization failed (%d)\n", rc);
 			return -127;
 		}
 
@@ -185,7 +185,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 	rc = getaddrinfo(
 		ctx->host.c_str(), std::to_string(ctx->port).c_str(), &hints, &res);
 	if (rc != 0 || !res) {
-		printf("FAILED getaddrinfo %d %d\n", rc, errno);
+		LOG_ERR("FAILED getaddrinfo %d %d\n", rc, errno);
 		if (res) freeaddrinfo(res);
 
 		return -1;
@@ -193,7 +193,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 
 	ctx->sock = socket(res->ai_family, res->ai_socktype, 0);
 	if (ctx->sock == LIBSSH2_INVALID_SOCKET) {
-		fprintf(stderr, "failed to create socket.\n");
+		LOG_ERR("failed to create socket.\n");
 		freeaddrinfo(res);
 
 		return -1;
@@ -201,8 +201,8 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 
 	rc = connect(ctx->sock, res->ai_addr, res->ai_addrlen);
 	if (rc) {
-		fprintf(stderr, "failed to connect. (%d) [%s:%u]\n", rc,
-			ctx->host.c_str(), ctx->port);
+		LOG_ERR("failed to connect. (%d) [%s:%u]\n", rc, ctx->host.c_str(),
+			ctx->port);
 		freeaddrinfo(res);
 
 		return rc;
@@ -217,7 +217,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 	 * */
 	ctx->session = libssh2_session_init_ex(NULL, NULL, NULL, ctx);
 	if (!ctx->session) {
-		fprintf(stderr, "Could not initialize SSH session.\n");
+		LOG_ERR("Could not initialize SSH session.\n");
 		return -1;
 	}
 
@@ -229,18 +229,18 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		== LIBSSH2_ERROR_EAGAIN);
 
 	if (rc) {
-		fprintf(stderr, "Failure establishing SSH session: %d\n", rc);
+		LOG_ERR("Failure establishing SSH session: %d\n", rc);
 		return -1;
 	}
 
 	ctx->fingerprint
 		= libssh2_hostkey_hash(ctx->session, LIBSSH2_HOSTKEY_HASH_SHA1);
 
-	fprintf(stderr, "Fingerprint: ");
+	LOG_ERR("Fingerprint: ");
 	for (uint8_t i = 0; i < 20; i++) {
-		fprintf(stderr, "%02X ", (unsigned char)ctx->fingerprint[i]);
+		LOG_ERR("%02X ", (unsigned char)ctx->fingerprint[i]);
 	}
-	fprintf(stderr, "\n");
+	LOG_ERR("\n");
 
 	return 0;
 }
@@ -273,19 +273,19 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			fprintf(stderr, "Authentication by public key failed [%d] %s\n",
-				errcode, errmsg ? errmsg : "Unknown error message");
+			LOG_ERR("Authentication by public key failed [%d] %s\n", errcode,
+				errmsg ? errmsg : "Unknown error message");
 			return -1;
 		}
 	} else if (!ctx->password.empty()) {
 		rc = prv_auth_password(ctx);
 		if (rc) {
-			fprintf(stderr, "Authentication by password failed %d [%s].\n", rc,
+			LOG_ERR("Authentication by password failed %d [%s].\n", rc,
 				ctx->username.c_str());
 			return -1;
 		}
 	} else {
-		fprintf(stderr, "No Valid Authentication is provided.\n");
+		LOG_ERR("No Valid Authentication is provided.\n");
 		return -2;
 	}
 
@@ -293,7 +293,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 		ctx->sftp_session = libssh2_sftp_init(ctx->session);
 
 		if (!ctx->sftp_session && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			fprintf(stderr, "Unable to init SFTP session\n");
+			LOG_ERR("Unable to init SFTP session\n");
 			return -3;
 		}
 	} while (!ctx->sftp_session);
@@ -312,8 +312,7 @@ int32_t SftpHelper::close_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 	if (rc) {
 		int32_t errcode = libssh2_sftp_last_error(ctx->sftp_session);
 
-		fprintf(stderr, "Failed to close dir '%s' [%d]\n", dir->path.c_str(),
-			errcode);
+		LOG_ERR("Failed to close dir '%s' [%d]\n", dir->path.c_str(), errcode);
 
 		return errcode;
 	}
@@ -336,10 +335,9 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 			int32_t errcode
 				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			fprintf(stderr,
-				"Unable to open dir '%s' '%s' with SFTP [%d] %s %s:%d\n",
+			LOG_ERR("Unable to open dir '%s' '%s' with SFTP [%d] %s\n",
 				dir->path.c_str(), dir->rela.c_str(), errcode,
-				errmsg ? errmsg : "Unknown error message", __FILE__, __LINE__);
+				errmsg ? errmsg : "Unknown error message");
 
 			return errcode;
 		}
@@ -442,14 +440,15 @@ int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 	struct stat st;
 
-	int32_t rc     = 0;
-	char mem[4096] = { 0 };
+	int32_t rc        = 0;
+	char    mem[4096] = { 0 };
 
-	while(FN_RC_EAGAIN(rc, libssh2_sftp_readlink(
-		ctx->sftp_session, remote_file.c_str(), mem, sizeof(mem))));
+	while (FN_RC_EAGAIN(rc,
+		libssh2_sftp_readlink(
+			ctx->sftp_session, remote_file.c_str(), mem, sizeof(mem))));
 
 	if (rc < 0) {
-		fprintf(stderr, "Unable to open file '%s' with SFTP: %ld\n",
+		LOG_ERR("Unable to open file '%s' with SFTP: %ld\n",
 			remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
 		return rc;
 	}
@@ -462,7 +461,7 @@ int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
 	}
 
 	if ((rc = symlink(mem, local_file.c_str()))) {
-		fprintf(stderr, "Failed to create symlink '%s' with SFTP: %d\n",
+		LOG_ERR("Failed to create symlink '%s' with SFTP: %d\n",
 			local_file.c_str(), rc);
 		perror("SYMLINK FAILED");
 	}
@@ -472,71 +471,57 @@ int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 int32_t SftpHelper::copy_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 {
+	int32_t rc = 0;
+
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 
-	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str());
-
-	int32_t err      = 0;
-	FILE*   fd_local = fopen(local_file.c_str(), "wb");
+	LIBSSH2_SFTP_HANDLE* handle   = prv_open_file(ctx, remote_file.c_str());
+	FILE*                fd_local = fopen(local_file.c_str(), "wb");
 
 	if (!fd_local) {
-		fprintf(stderr, "Error opening file!\n");
+		LOG_ERR("Error opening file!\n");
 		return -2;
 	}
 
 	// connection loop, check if socket is ready
-	do {
+	while (1) {
 		int32_t nread = 0;
 
 		// remote read loop, loop until failed or no remaining bytes
 		do {
 			char mem[SFTP_READ_BUFFER_SIZE];
-
 			nread = libssh2_sftp_read(handle, mem, sizeof(mem));
 			if (nread > 0) fwrite(mem, (size_t)nread, 1, fd_local);
-
 		} while (nread > 0);
 
 		// error or end of file
-		if (nread != LIBSSH2_ERROR_EAGAIN) break;
-
-		// this block is to wait for socket to be ready. Copied from example
-		struct timeval timeout;
-		fd_set         fd;
-		fd_set         fd2;
-
-		timeout.tv_sec  = 10;
-		timeout.tv_usec = 0;
-
-		FD_ZERO(&fd);
-		FD_ZERO(&fd2);
-#if defined(__GNUC__) || defined(__clang__)
-#	pragma GCC diagnostic push
-#	pragma GCC diagnostic ignored "-Wsign-conversion"
-#endif
-		FD_SET(ctx->sock, &fd);
-		FD_SET(ctx->sock, &fd2);
-#if defined(__GNUC__) || defined(__clang__)
-#	pragma GCC diagnostic pop
-#endif
-
-		/* wait for readable or writeable */
-		int32_t rc = select((int)(ctx->sock + 1), &fd, &fd2, NULL, &timeout);
-		if (rc <= 0) {
-			/* negative is error, 0 is timeout */
-			fprintf(stderr, "SFTP download timed out: %d\n", rc);
-
-			// -3 is timeout, -1 is error.
-			// FIXME: Should use enum instead this magic number
-			err = rc == 0 ? -3 : -1;
+		if (nread != LIBSSH2_ERROR_EAGAIN) {
+			if (nread < 0) rc = nread;
 			break;
 		}
-	} while (1);
+
+		// negative is error, 0 is timeout
+		int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
+		if (wait_rc == 0) {
+			rc = LIBSSH2_ERROR_TIMEOUT;
+			LOG_ERR("SFTP download timed out: %d\n", rc);
+			break;
+		} else if (wait_rc < 0) {
+			rc = errno;
+			LOG_ERR("SFTP download error: %d\n", rc);
+			break;
+		} else {
+			// no error. continue
+		}
+	}
 
 	// close both sftp and file handle
 	libssh2_sftp_close(handle);
 	fclose(fd_local);
+
+	// return now if error
+	if (rc) return rc;
 
 	// set modification time for local file to match the remote one
 	// this must be done AFTER CLOSING the file handle
@@ -547,17 +532,17 @@ int32_t SftpHelper::copy_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 
 	// set modified & access time time to match remote
 	if (utime(local_file.c_str(), &times)) {
-		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
+		LOG_ERR("Failed to set mtime [%d]\n", errno);
 	}
 
 #ifdef _POSIX_VERSION
 	// set file attribute to match remote. non-windows only
 	if (chmod(local_file.c_str(), SNOD_FILE_PERM(file->attrs))) {
-		fprintf(stderr, "Failed to set attributes: %d\n", errno);
+		LOG_ERR("Failed to set attributes: %d\n", errno);
 	}
 #endif
 
-	return err;
+	return rc;
 }
 
 int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
@@ -565,8 +550,8 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 	std::string local_file = ctx->local_path + SNOD_SEP + filename;
 
 	if (remove(local_file.c_str())) {
-		fprintf(stderr, "Err %d: %s '%s'\n", errno, strerror(errno),
-			local_file.c_str());
+		LOG_ERR(
+			"Err %d: %s '%s'\n", errno, strerror(errno), local_file.c_str());
 		return -1;
 	}
 
@@ -601,20 +586,20 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 #ifdef _POSIX_VERSION
 	rc = mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
 	if (rc) {
-		fprintf(stderr, "Failed create directory: %d\n", errno);
+		LOG_ERR("Failed create directory: %d\n", errno);
 		return rc;
 	}
 
 	// set modified & access time time to match remote
 	if (utime(local_dir.c_str(), &times)) {
-		fprintf(stderr, "Failed to set mtime [%d]\n", errno);
+		LOG_ERR("Failed to set mtime [%d]\n", errno);
 	}
 #endif
 
 #ifdef _WIN32
 	// NOTE: If the CreateDirectoryA succeeds, the return value is nonzero.
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
-	if (!rc) fprintf(stderr, "Failed create directory: %d\n", GetLastError());
+	if (!rc) LOG_ERR("Failed create directory: %d\n", GetLastError());
 #endif
 
 	return rc;

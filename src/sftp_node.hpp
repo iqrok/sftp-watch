@@ -26,9 +26,25 @@
 #	define SFTP_FILENAME_MAX_LEN 512
 #endif
 
-#define SNOD_PATH_SEP        '/'
-#define SNOD_FILE_PERM(attr) (attr.permissions & 0777)
-#define SNOD_SEP             (std::string("/"))
+#define EVT_STR_DEL "del"
+#define EVT_STR_NEW "new"
+#define EVT_STR_MOD "mod"
+#define EVT_STR_REN "ren"
+
+#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
+#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
+#define SNOD_FILE_PERM(attr)         (attr.permissions & 0777)
+
+#define SNOD_SEP      "/"
+#define SNOD_SEP_CHAR SNOD_SEP[0]
+
+#define SNOD_DELAY_US(us)                                                      \
+	std::this_thread::sleep_for(std::chrono::microseconds((us)))
+#define SNOD_DELAY_MS(ms)                                                      \
+	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
+#define SNOD_SEC2MS(s) ((s) * 1000)
+
+#define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -41,18 +57,19 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
+enum EventFile_e {
+	EVT_FILE_DEL,
+	EVT_FILE_NEW,
+	EVT_FILE_MOD,
+	EVT_FILE_REN,
+};
+
 typedef struct EvtFile_s   EvtFile_t;
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
 typedef struct RemoteDir_s RemoteDir_t;
 
 typedef std::map<std::string, DirItem_t> PairFileDet_t;
-
-struct EvtFile_s {
-	bool       status = false;
-	uint8_t    ev;
-	DirItem_t* file;
-};
 
 struct DirItem_s {
 	uint8_t     type = 0;

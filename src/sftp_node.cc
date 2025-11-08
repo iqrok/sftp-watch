@@ -8,34 +8,29 @@
 #include <napi.h>
 
 #include "sftp_helper.hpp"
+#include "sftp_local.hpp"
 #include "sftp_node.hpp"
 #include "sftp_node_api.hpp"
 
-#define EVT_STR_DEL "del"
-#define EVT_STR_NEW "new"
-#define EVT_STR_MOD "mod"
-
-#define DELAY_US(us)                                                           \
-	std::this_thread::sleep_for(std::chrono::microseconds((us)))
-#define DELAY_MS(ms)                                                           \
-	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
-
-#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
-#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
-#define SNOD_SEC2MS(s)               ((s) * 1000)
-
-enum EventFile_e {
-	EVT_FILE_DEL,
-	EVT_FILE_NEW,
-	EVT_FILE_MOD,
+struct EvtFile_s {
+	bool       status = false;
+	uint8_t    ev;
+	DirItem_t* file;
 };
+
+#define SNOD_PRV_WAIT_US 50'000
+#define SNOD_THREAD_WAIT(i, sum, fl)  do {                                     \
+		for (uint32_t ms = (i); ms <= (sum * 1000) && (fl); ms += (i))         \
+			SNOD_DELAY_US((i));                                                \
+	} while (0)
+
 
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
 static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
 static int     sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir);
 static void    sync_dir_thread(SftpWatch_t* ctx);
-static void    sync_dir_finalizer(
+void    sync_dir_finalizer(
 	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
 static void sync_dir_tsfn_cb(
 	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx);
@@ -65,19 +60,21 @@ static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 	return 0;
 }
 
-static void sync_dir_finalizer(
+void sync_dir_finalizer(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx)
 {
 	(void)finalizeData; // unused. btw it's a nullptr
 
+	SftpHelper::disconnect(ctx);
+
+	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
 	ctx->thread.join();
 
 	watchers.erase(ctx->id);
-	delete ctx;
 
 	if (watchers.empty()) SftpHelper::shutdown();
 
-	ctx->deferred.Resolve(Napi::Boolean::New(env, true));
+	delete ctx;
 }
 
 static void sync_dir_tsfn_cb(
@@ -97,6 +94,10 @@ static void sync_dir_tsfn_cb(
 
 	case EVT_FILE_MOD: {
 		obj.Set("evt", Napi::String::New(env, EVT_STR_MOD));
+	} break;
+
+	case EVT_FILE_REN: {
+		obj.Set("evt", Napi::String::New(env, EVT_STR_REN));
 	} break;
 
 	default:
@@ -186,13 +187,13 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 
 		// TODO: sync directory and its tree, until reached max depth
 		case IS_DIR: {
-			SftpHelper::mkdir_local(ctx, &item);
+			SftpLocal::mkdir(ctx, &item);
 
 			// TODO: check subdirectory depth before add it into list
 			RemoteDir_t sub;
 			sub.rela = item.name;
 
-			size_t pos = item.name.find_last_of(SNOD_PATH_SEP);
+			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
 			if (pos != std::string::npos) {
 				sub.path = dir.path + SNOD_SEP + item.name.substr(pos + 1);
 			} else {
@@ -237,7 +238,7 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 			 * NOTE: any file type should be safe enough to be remove directly,
 			 *       right?
 			 * */
-			SftpHelper::remove_local(ctx, old.name);
+			SftpLocal::remove(ctx, &old);
 		} break;
 		}
 
@@ -256,24 +257,23 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 {
 	while (!ctx->is_stopped) {
 		int32_t rc = 0;
+
 		for (const auto& [key, val] : ctx->dirs) {
 			RemoteDir_t dir = val;
-			if ((rc = sync_dir_loop(ctx, dir))) break;
+			if ((rc = sync_dir_loop(ctx, dir) | ctx->is_stopped)) break;
 		}
 
-		// check if any directoy is removed
-		for (auto it = ctx->undirs.begin();
-			rc == 0 && it != ctx->undirs.end();) {
-			/*
-			 * Remove local directory recursively and remove the key from remote
-			 * dirs map.
-			 *
-			 * FIXME: There's possibilty that the dir is still iterated once
-			 *        more after the deletion from map.
-			 *
-			 * TODO: check if dir is removed or renamed
-			 * */
-			SftpHelper::rmdir_local(ctx, *it);
+		/*
+		 * Remove local directory recursively and remove the key from remote
+		 * dirs map.
+		 *
+		 * FIXME: There's possibilty that the dir is still iterated once
+		 *        more after the deletion from map.
+		 *
+		 * TODO: check if dir is removed or renamed
+		 * */
+		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end();) {
+			SftpLocal::rmdir(ctx, *it);
 			ctx->dirs.erase(*it);
 
 			// remove the vector itself and go to the next iterator
@@ -286,16 +286,16 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 				if (reconnect_delay < ctx->timeout_sec) {
 					reconnect_delay += ctx->delay_ms;
 				}
-				DELAY_MS(reconnect_delay);
+				SNOD_DELAY_MS(reconnect_delay);
 			}
 			ctx->err_count = 0;
 		}
 
-		DELAY_MS(ctx->delay_ms);
+		SNOD_THREAD_WAIT(SNOD_PRV_WAIT_US, ctx->delay_ms, !ctx->is_stopped);
 	}
 
-	// outside loop means no more operation to do. Cleanup the connection
-	SftpHelper::disconnect(ctx);
+	// outside loop means no more operation to do. Cleaning up
+	ctx->tsfn.Release();
 }
 
 Napi::Value js_connect(const Napi::CallbackInfo& info)
@@ -513,31 +513,31 @@ Napi::Value js_sync_stop(const Napi::CallbackInfo& info)
 	if (info.Length() < 1) {
 		Napi::TypeError::New(env, "Invalid params. Should be <context_id>")
 			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
+		return env.Undefined();
 	}
 
 	if (!info[0].IsNumber()) {
 		Napi::TypeError::New(env, "Invalid context id. Should be a number")
 			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
+		return env.Undefined();
 	}
 
 	const uint32_t id = info[0].As<Napi::Number>().Uint32Value();
 
+	if (!watchers.contains(id)) return Napi::Boolean::New(env, true);
+
 	SftpWatch_t* ctx = watchers.at(id);
+
 	ctx->is_stopped  = true;
 
-	return ctx->deferred.Promise();
+	return env.Undefined();
 }
 
 static Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 {
-	exports.Set(Napi::String::New(env, "connect"),
-		Napi::Function::New(env, js_connect));
-	exports.Set(
-		Napi::String::New(env, "sync"), Napi::Function::New(env, js_sync_dir));
-	exports.Set(
-		Napi::String::New(env, "stop"), Napi::Function::New(env, js_sync_stop));
+	exports.Set(Napi::String::New(env, "connect"), Napi::Function::New(env, js_connect));
+	exports.Set(Napi::String::New(env, "sync"), Napi::Function::New(env, js_sync_dir));
+	exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, js_sync_stop));
 
 	return exports;
 }
