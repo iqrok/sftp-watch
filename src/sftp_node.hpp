@@ -119,6 +119,7 @@ struct SftpWatch_s {
 	std::map<std::string, RemoteDir_t>   dirs;
 	std::map<std::string, PairFileDet_t> last_files;
 	std::vector<std::string>             undirs;
+	std::vector<DirItem_t*>              downloads;
 
 	// pointer to event data for js callback
 	EvtFile_t* ev_file;
