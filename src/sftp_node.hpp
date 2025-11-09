@@ -44,7 +44,22 @@
 	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
 #define SNOD_SEC2MS(s) ((s) * 1000)
 
+#ifndef SNOD_HOSTKEY_HASH
+#	define SNOD_HOSTKEY_HASH LIBSSH2_HOSTKEY_HASH_SHA1
+#endif
+
+#if ((SNOD_HOSTKEY_HASH) == (LIBSSH2_HOSTKEY_HASH_MD5))
+#	define SNOD_FINGERPRINT_LEN 16U
+#elif ((SNOD_HOSTKEY_HASH) == (LIBSSH2_HOSTKEY_HASH_SHA1))
+#	define SNOD_FINGERPRINT_LEN 20U
+#elif ((SNOD_HOSTKEY_HASH) == (LIBSSH2_HOSTKEY_HASH_SHA256))
+#	define SNOD_FINGERPRINT_LEN 32U
+#else
+#	error "SNOD_HOSTKEY_HASH is undefined"
+#endif
+
 #define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
+#define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -67,23 +82,30 @@ enum EventFile_e {
 typedef struct EvtFile_s   EvtFile_t;
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
-typedef struct RemoteDir_s RemoteDir_t;
+typedef struct Directory_s Directory_t;
 
-typedef std::map<std::string, DirItem_t> PairFileDet_t;
+typedef std::map<std::string, DirItem_t>     PairFileDet_t;
+typedef std::map<std::string, Directory_t>   DirList_t;
+typedef std::map<std::string, PairFileDet_t> DirSnapshot_t;
 
 struct DirItem_s {
-	uint8_t     type = 0;
+	/** Type of file as stated in #FileType_e */
+	uint8_t type = 0;
+
+	/** file name represented as path relative to root path */
 	std::string name;
 
+	/** File attributes. Also be used for local directory */
 	LIBSSH2_SFTP_ATTRIBUTES attrs;
 };
 
-struct RemoteDir_s {
-	bool        is_opened = false;
-	std::string rela;
-	std::string path;
+struct Directory_s {
+	bool        is_opened = false; /**< Directory open status */
+	std::string rela;              /**< path relative to root path */
+	std::string path;              /**< absoulte path */
 
-	LIBSSH2_SFTP_HANDLE* handle;
+	/** SFTP handle for remote directory. not used for local directory */
+	LIBSSH2_SFTP_HANDLE* handle = NULL;
 };
 
 struct SftpWatch_s {
@@ -104,28 +126,34 @@ struct SftpWatch_s {
 	uint8_t err_count     = 0;
 	uint8_t max_err_count = 3;
 
-	libssh2_socket_t   sock;
-	LIBSSH2_SESSION*   session;
-	LIBSSH2_SFTP*      sftp_session;
-	struct sockaddr_in sin;
-	const char*        fingerprint;
+	libssh2_socket_t     sock;
+	LIBSSH2_SESSION*     session;
+	LIBSSH2_SFTP*        sftp_session;
+	struct sockaddr_in   sin;
+	std::vector<uint8_t> fingerprint;
 
 	Napi::Promise::Deferred  deferred;
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
 
-	// collection of directory that should be iterated
-	std::map<std::string, RemoteDir_t>   dirs;
-	std::map<std::string, PairFileDet_t> last_files;
-	std::vector<std::string>             undirs;
-	std::vector<DirItem_t*>              downloads;
+	/**< collection of directory that should be iterated */
+	DirList_t remote_dirs;
 
-	// pointer to event data for js callback
+	/** Snapshot per directory. Containing list of files*/
+	DirSnapshot_t remote_sshot;
+
+	/** List of files that will be downloaded */
+	std::vector<DirItem_t*> downloads;
+
+	/** List of directory that should be removed from iteration */
+	std::vector<std::string> remote_undirs;
+
+	/** pointer to event data for js callback */
 	EvtFile_t* ev_file;
 
-	bool     is_stopped;
-	uint32_t delay_ms = 1000;
+	bool     is_stopped = false; /**< set to true to stop sync loop */
+	uint32_t delay_ms   = 1000;  /**< delay between sync loop */
 
 	SftpWatch_s(Napi::Env env, uint32_t qid)
 		: id(qid)

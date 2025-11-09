@@ -3,14 +3,15 @@
 #include <cstdint>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <napi.h>
 
-#include "sftp_helper.hpp"
 #include "sftp_local.hpp"
 #include "sftp_node.hpp"
 #include "sftp_node_api.hpp"
+#include "sftp_remote.hpp"
 
 struct EvtFile_s {
 	bool       status = false;
@@ -25,10 +26,12 @@ struct EvtFile_s {
 			SNOD_DELAY_MS((i));                                                \
 	} while (0)
 
+namespace { // start of unnamed namespace for static function
+
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
 static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
-static int     sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir);
+static int     sync_dir_loop(SftpWatch_t* ctx, Directory_t& dir);
 static void    sync_dir_thread(SftpWatch_t* ctx);
 static void    sync_dir_finalizer(
 	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
@@ -52,10 +55,10 @@ static std::unordered_map<uint32_t, SftpWatch_t*> watchers;
 /* ************************* Implementations ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 {
-	if (ctx->is_connected) SftpHelper::disconnect(ctx);
+	if (ctx->is_connected) SftpRemote::disconnect(ctx);
 
-	if (SftpHelper::connect(ctx)) return -1;
-	if (SftpHelper::auth(ctx)) return -2;
+	if (SftpRemote::connect(ctx)) return -1;
+	if (SftpRemote::auth(ctx)) return -2;
 
 	return 0;
 }
@@ -65,14 +68,14 @@ static void sync_dir_finalizer(
 {
 	(void)finalizeData; // unused. btw it's a nullptr
 
-	SftpHelper::disconnect(ctx);
+	SftpRemote::disconnect(ctx);
 
 	ctx->thread.join();
 	ctx->deferred.Resolve(Napi::Number::New(env, ctx->id));
 
 	watchers.erase(ctx->id);
 
-	if (watchers.empty()) SftpHelper::shutdown();
+	if (watchers.empty()) SftpRemote::shutdown();
 
 	delete ctx;
 }
@@ -138,16 +141,19 @@ static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 	ctx->sem.acquire();
 }
 
-static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
+static int sync_dir_loop(SftpWatch_t* ctx, Directory_t& dir)
 {
 	// we're gonna need pair for the directory. So, create it anyway use []
-	PairFileDet_t& list = ctx->last_files[dir.path];
-	PairFileDet_t  current;
-	DirItem_t      item;
-	int32_t        rc;
+	PairFileDet_t& list = ctx->remote_sshot[dir.path];
+
+	// use set to store current key. No need to store the item
+	std::unordered_set<std::string> current;
+
+	DirItem_t item;
+	int32_t   rc;
 
 	// open remote dir first
-	if ((rc = SftpHelper::open_dir(ctx, &dir))) {
+	if ((rc = SftpRemote::open_dir(ctx, &dir))) {
 		++ctx->err_count;
 		return -1;
 	}
@@ -155,11 +161,11 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 	ctx->err_count = 0;
 
 	// read the opened directory
-	while ((rc = SftpHelper::read_dir(dir, &item))) {
+	while ((rc = SftpRemote::read_dir(dir, &item))) {
 		if (item.name.empty()) continue;
 
 		std::string key = item.name;
-		current[key]    = item;
+		current.insert(key);
 
 		// Check for new or modified files
 		bool is_mod = false;
@@ -180,7 +186,7 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 			SftpLocal::mkdir(ctx, &item);
 
 			// TODO: check subdirectory depth before add it into list
-			RemoteDir_t sub;
+			Directory_t sub;
 			sub.rela = item.name;
 
 			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
@@ -190,11 +196,14 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 				sub.path = dir.path + SNOD_SEP + item.name;
 			}
 
-			ctx->dirs[item.name] = sub;
+			ctx->remote_dirs[item.name] = sub;
 		} break;
 
 		default: {
-			// NOTE: to avoid double copy, use address of item saved in `list`
+			/*
+			 * NOTE: to avoid double copy, use pointer of item saved in `list`.
+			 *       `list` has lifetime long enough until downloads are done.
+			 * */
 			ctx->downloads.push_back(&list.at(key));
 		} break;
 		}
@@ -207,7 +216,8 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 	 *       below
 	 * */
 	for (auto it = list.begin(); it != list.end();) {
-		if (current.contains(it->first)) {
+		//~ if (current.contains(it->first)) {
+		if (current.find(it->first) != current.end()) {
 			++it;
 			continue;
 		}
@@ -221,7 +231,7 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 			 * Pushing back into waiting list to be processed later when dir
 			 * loop has been finished
 			 * */
-			ctx->undirs.push_back(old->name);
+			ctx->remote_undirs.push_back(old->name);
 		} break;
 
 		default: {
@@ -239,7 +249,7 @@ static int sync_dir_loop(SftpWatch_t* ctx, RemoteDir_t& dir)
 	}
 
 	// close opened dir
-	SftpHelper::close_dir(ctx, &dir);
+	SftpRemote::close_dir(ctx, &dir);
 
 	return 0;
 }
@@ -249,7 +259,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 	while (!ctx->is_stopped) {
 		int32_t rc = 0;
 
-		for (auto& [key, dir] : ctx->dirs) {
+		for (auto& [key, dir] : ctx->remote_dirs) {
 			if (ctx->is_stopped || (rc = sync_dir_loop(ctx, dir))) break;
 		}
 
@@ -262,15 +272,16 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			switch ((*it)->type) {
 
 			case IS_SYMLINK: {
-				SftpHelper::copy_symlink_remote(ctx, *it);
+				SftpRemote::copy_symlink(ctx, *it);
 			} break;
 
 			case IS_REG_FILE: {
-				SftpHelper::copy_file_remote(ctx, *it);
+				SftpRemote::copy_file(ctx, *it);
 			} break;
 
-			default:
-				break;
+			default: {
+				// nothing to do for now
+			} break;
 			}
 
 			// remove the vector itself and go to the next iterator
@@ -279,19 +290,21 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 
 		/*
 		 * Remove local directory recursively and remove the key from remote
-		 * dirs map.
+		 * remote_dirs map.
 		 *
 		 * FIXME: There's possibilty that the dir is still iterated once
 		 *        more after the deletion from map.
 		 *
 		 * TODO: check if dir is removed or renamed
 		 * */
-		for (auto it = ctx->undirs.begin(); it != ctx->undirs.end();) {
+		for (auto it = ctx->remote_undirs.begin();
+			it != ctx->remote_undirs.end();) {
+
 			SftpLocal::rmdir(ctx, *it);
-			ctx->dirs.erase(*it);
+			ctx->remote_dirs.erase(*it);
 
 			// remove the vector itself and go to the next iterator
-			it = ctx->undirs.erase(it);
+			it = ctx->remote_undirs.erase(it);
 		}
 
 		if (ctx->err_count >= ctx->max_err_count && !ctx->is_stopped) {
@@ -324,7 +337,7 @@ Napi::Value js_connect(const Napi::CallbackInfo& info)
 
 	Napi::Object arg = info[0].As<Napi::Object>();
 
-	RemoteDir_t dir;
+	Directory_t dir;
 	std::string host;
 	std::string username;
 	std::string pubkey;
@@ -435,7 +448,7 @@ Napi::Value js_connect(const Napi::CallbackInfo& info)
 	ctx->local_path   = local_path;
 	ctx->is_connected = false;
 
-	ctx->dirs[ctx->remote_path] = dir;
+	ctx->remote_dirs[ctx->remote_path] = dir;
 
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
@@ -559,3 +572,5 @@ static Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 }
 
 NODE_API_MODULE(NODE_GYP_MODULE_NAME, init_napi);
+
+} // end of unnamed namespace for static function

@@ -29,7 +29,7 @@
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
-#include "sftp_helper.hpp"
+#include "sftp_remote.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -37,11 +37,22 @@
 
 #include <filesystem> // for removing directory
 
-static bool is_inited = false;
-
 #define FN_RC_EAGAIN(rc, fn)   (((rc) = (fn)) == LIBSSH2_ERROR_EAGAIN)
 #define FN_ACTUAL_ERROR(err)   ((err) != LIBSSH2_ERROR_EAGAIN)
 #define FN_LAST_ERRNO_ERROR(s) FN_ACTUAL_ERROR(libssh2_session_last_errno(s))
+
+#ifdef LOG_DBG
+#	define LOG_DBG_FINGERPRINT(fp)                                            \
+		do {                                                                   \
+			LOG_ERR("Fingerprint ");                                           \
+			for (uint8_t fp_byte : fp) LOG_ERR(":%02X", fp_byte);              \
+			LOG_ERR("\n");                                                     \
+		} while (0)
+#endif
+
+namespace { // start of unnamed namespace for static function
+
+static bool is_inited = false; /**< Whether libssh2 is initialized or nor */
 
 // Straight copied from example/sftp_RW_nonblock.c
 static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session)
@@ -152,7 +163,9 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 	return handle;
 }
 
-int32_t SftpHelper::connect(SftpWatch_t* ctx)
+} // end of unnamed namespace for static function
+
+int32_t SftpRemote::connect(SftpWatch_t* ctx)
 {
 	int32_t rc;
 
@@ -199,8 +212,7 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		return -1;
 	}
 
-	rc = connect(ctx->sock, res->ai_addr, res->ai_addrlen);
-	if (rc) {
+	if ((rc = connect(ctx->sock, res->ai_addr, res->ai_addrlen))) {
 		LOG_ERR("failed to connect. (%d) [%s:%u]\n", rc, ctx->host.c_str(),
 			ctx->port);
 		freeaddrinfo(res);
@@ -233,19 +245,16 @@ int32_t SftpHelper::connect(SftpWatch_t* ctx)
 		return -1;
 	}
 
-	ctx->fingerprint
-		= libssh2_hostkey_hash(ctx->session, LIBSSH2_HOSTKEY_HASH_SHA1);
-
-	LOG_ERR("Fingerprint: ");
-	for (uint8_t i = 0; i < 20; i++) {
-		LOG_ERR("%02X ", (unsigned char)ctx->fingerprint[i]);
+	const char* fp;
+	if ((fp = libssh2_hostkey_hash(ctx->session, SNOD_HOSTKEY_HASH))) {
+		ctx->fingerprint = std::vector<uint8_t>(fp, fp + SNOD_FINGERPRINT_LEN);
+		LOG_DBG_FINGERPRINT(ctx->fingerprint);
 	}
-	LOG_ERR("\n");
 
 	return 0;
 }
 
-int32_t SftpHelper::auth(SftpWatch_t* ctx)
+int32_t SftpRemote::auth(SftpWatch_t* ctx)
 {
 	int32_t rc;
 
@@ -301,7 +310,7 @@ int32_t SftpHelper::auth(SftpWatch_t* ctx)
 	return 0;
 }
 
-int32_t SftpHelper::close_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
+int32_t SftpRemote::close_dir(SftpWatch_t* ctx, Directory_t* dir)
 {
 	if (!dir->is_opened) return 0;
 
@@ -322,9 +331,9 @@ int32_t SftpHelper::close_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 	return 0;
 }
 
-int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
+int32_t SftpRemote::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 {
-	if (dir->is_opened) SftpHelper::close_dir(ctx, dir);
+	if (dir->is_opened) SftpRemote::close_dir(ctx, dir);
 
 	do {
 		dir->handle
@@ -339,7 +348,8 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 				dir->path.c_str(), dir->rela.c_str(), errcode,
 				errmsg ? errmsg : "Unknown error message");
 
-			return errcode;
+			// return the errno detail from sftp session
+			return libssh2_sftp_last_error(ctx->sftp_session);
 		}
 	} while (!dir->handle);
 
@@ -348,7 +358,7 @@ int32_t SftpHelper::open_dir(SftpWatch_t* ctx, RemoteDir_t* dir)
 	return 0;
 }
 
-int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
+int32_t SftpRemote::read_dir(Directory_t& dir, DirItem_t* file)
 {
 	int32_t rc = 0;
 
@@ -369,7 +379,7 @@ int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
 			return 1;
 		}
 
-		file->type = SftpHelper::get_filetype(file);
+		file->type = SftpRemote::get_filetype(file);
 		file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
 
 		return 1;
@@ -382,7 +392,7 @@ int32_t SftpHelper::read_dir(RemoteDir_t& dir, DirItem_t* file)
 	return 0;
 }
 
-uint8_t SftpHelper::get_filetype(DirItem_t* file)
+uint8_t SftpRemote::get_filetype(DirItem_t* file)
 {
 	if (file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
 		if (LIBSSH2_SFTP_S_ISREG(file->attrs.permissions)) {
@@ -407,7 +417,7 @@ uint8_t SftpHelper::get_filetype(DirItem_t* file)
 	}
 }
 
-void SftpHelper::disconnect(SftpWatch_t* ctx)
+void SftpRemote::disconnect(SftpWatch_t* ctx)
 {
 	libssh2_sftp_shutdown(ctx->sftp_session);
 
@@ -423,7 +433,7 @@ void SftpHelper::disconnect(SftpWatch_t* ctx)
 	}
 }
 
-void SftpHelper::shutdown()
+void SftpRemote::shutdown()
 {
 	libssh2_exit();
 
@@ -434,7 +444,7 @@ void SftpHelper::shutdown()
 	is_inited = false;
 }
 
-int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpRemote::copy_symlink(SftpWatch_t* ctx, DirItem_t* file)
 {
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
@@ -456,7 +466,7 @@ int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
 	// check if symlonk exists and remove it
 	if ((rc = lstat(local_file.c_str(), &st)) == 0) {
 		if (S_ISLNK(st.st_mode)) {
-			SftpHelper::remove_local(ctx, file->name.c_str());
+			SftpRemote::remove_local(ctx, file->name.c_str());
 		}
 	}
 
@@ -469,7 +479,7 @@ int32_t SftpHelper::copy_symlink_remote(SftpWatch_t* ctx, DirItem_t* file)
 	return rc;
 }
 
-int32_t SftpHelper::copy_file_remote(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpRemote::copy_file(SftpWatch_t* ctx, DirItem_t* file)
 {
 	int32_t rc = 0;
 
@@ -545,7 +555,7 @@ int32_t SftpHelper::copy_file_remote(SftpWatch_t* ctx, DirItem_t* file)
 	return rc;
 }
 
-int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
+int32_t SftpRemote::remove_local(SftpWatch_t* ctx, std::string filename)
 {
 	std::string local_file = ctx->local_path + SNOD_SEP + filename;
 
@@ -558,7 +568,7 @@ int32_t SftpHelper::remove_local(SftpWatch_t* ctx, std::string filename)
 	return 0;
 }
 
-int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpRemote::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
 {
 	std::string local_dir = ctx->local_path + SNOD_SEP + file->name;
 	struct stat st;
@@ -609,7 +619,7 @@ int32_t SftpHelper::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
  * NOTE: using C++ filesystem to remove directory and its contents
  *       ref https://stackoverflow.com/a/50051546/3258981
  * */
-void SftpHelper::rmdir_local(SftpWatch_t* ctx, std::string dirname)
+void SftpRemote::rmdir_local(SftpWatch_t* ctx, std::string dirname)
 {
 	std::filesystem::path dirpath(ctx->local_path + SNOD_SEP + dirname);
 
