@@ -139,9 +139,10 @@ struct SftpWatch_s {
 
 	/**< collection of directory that should be iterated */
 	DirList_t remote_dirs;
+	DirList_t local_dirs;
 
 	/** Snapshot per directory. Containing list of files*/
-	DirSnapshot_t remote_sshot;
+	DirSnapshot_t snapshots;
 
 	/** List of files that will be downloaded */
 	std::vector<DirItem_t*> downloads;
@@ -155,12 +156,23 @@ struct SftpWatch_s {
 	bool     is_stopped = false; /**< set to true to stop sync loop */
 	uint32_t delay_ms   = 1000;  /**< delay between sync loop */
 
-	SftpWatch_s(Napi::Env env, uint32_t qid)
-		: id(qid)
+	SftpWatch_s(Napi::Env env, uint32_t id, std::string host,
+		std::string username, std::string pubkey, std::string privkey,
+		std::string password, Directory_t remote_dir, Directory_t local_dir)
+		: id(id)
+		, host(host)
+		, username(username)
+		, remote_path(remote_dir.path)
+		, local_path(local_dir.path)
+		, pubkey(pubkey)
+		, privkey(privkey)
+		, password(password)
 		, deferred(Napi::Promise::Deferred::New(env))
 		, sem(0) // semaphore is initially locked
+		, is_stopped(false)
 	{
-		// left empty intentionally
+		this->remote_dirs[this->remote_path] = remote_dir;
+		this->local_dirs[this->local_path]   = local_dir;
 	}
 };
 

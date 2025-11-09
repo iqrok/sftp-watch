@@ -144,7 +144,7 @@ static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 static int sync_dir_loop(SftpWatch_t* ctx, Directory_t& dir)
 {
 	// we're gonna need pair for the directory. So, create it anyway use []
-	PairFileDet_t& list = ctx->remote_sshot[dir.path];
+	PairFileDet_t& list = ctx->snapshots[dir.path];
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -212,11 +212,12 @@ static int sync_dir_loop(SftpWatch_t* ctx, Directory_t& dir)
 	}
 
 	/*
+	 * Removal of orphaned directory items.
+	 *
 	 * NOTE: no increment at the end. it will be handled based on condition
 	 *       below
 	 * */
 	for (auto it = list.begin(); it != list.end();) {
-		//~ if (current.contains(it->first)) {
 		if (current.find(it->first) != current.end()) {
 			++it;
 			continue;
@@ -337,14 +338,13 @@ Napi::Value js_connect(const Napi::CallbackInfo& info)
 
 	Napi::Object arg = info[0].As<Napi::Object>();
 
-	Directory_t dir;
+	Directory_t remote_dir;
+	Directory_t local_dir;
 	std::string host;
 	std::string username;
 	std::string pubkey;
 	std::string privkey;
 	std::string password;
-	std::string remote_path;
-	std::string local_path;
 
 	// ------------------- Mandatory properties --------------------------------
 	if (arg.Has("host")) {
@@ -383,8 +383,7 @@ Napi::Value js_connect(const Napi::CallbackInfo& info)
 			return Napi::Boolean::New(env, false);
 		}
 
-		remote_path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
-		dir.path    = remote_path;
+		remote_dir.path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
 	} else {
 		Napi::TypeError::New(env, "'remotePath' is undefined")
 			.ThrowAsJavaScriptException();
@@ -399,7 +398,7 @@ Napi::Value js_connect(const Napi::CallbackInfo& info)
 			return Napi::Boolean::New(env, false);
 		}
 
-		local_path = arg.Get("localPath").As<Napi::String>().Utf8Value();
+		local_dir.path = arg.Get("localPath").As<Napi::String>().Utf8Value();
 	}
 
 	// ------------------------ Auth properties --------------------------------
@@ -438,17 +437,9 @@ Napi::Value js_connect(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	SftpWatch_t* ctx  = new SftpWatch_t(env, ++ids);
-	ctx->host         = host;
-	ctx->username     = username;
-	ctx->pubkey       = pubkey;
-	ctx->privkey      = privkey;
-	ctx->password     = password;
-	ctx->remote_path  = remote_path;
-	ctx->local_path   = local_path;
-	ctx->is_connected = false;
-
-	ctx->remote_dirs[ctx->remote_path] = dir;
+	// ------------------------ Init context -----------------------------------
+	SftpWatch_t* ctx = new SftpWatch_t(env, ++ids, host, username, pubkey,
+		privkey, password, remote_dir, local_dir);
 
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
