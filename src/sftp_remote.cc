@@ -30,6 +30,7 @@
 #endif
 
 #include "sftp_remote.hpp"
+#include "sftp_local.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -50,7 +51,7 @@
 		} while (0)
 #endif
 
-namespace { // start of unnamed namespace for static function
+namespace {                    // start of unnamed namespace for static function
 
 static bool is_inited = false; /**< Whether libssh2 is initialized or nor */
 
@@ -466,7 +467,7 @@ int32_t SftpRemote::copy_symlink(SftpWatch_t* ctx, DirItem_t* file)
 	// check if symlonk exists and remove it
 	if ((rc = lstat(local_file.c_str(), &st)) == 0) {
 		if (S_ISLNK(st.st_mode)) {
-			SftpRemote::remove_local(ctx, file->name.c_str());
+			SftpLocal::remove(ctx, file->name);
 		}
 	}
 
@@ -553,77 +554,4 @@ int32_t SftpRemote::copy_file(SftpWatch_t* ctx, DirItem_t* file)
 #endif
 
 	return rc;
-}
-
-int32_t SftpRemote::remove_local(SftpWatch_t* ctx, std::string filename)
-{
-	std::string local_file = ctx->local_path + SNOD_SEP + filename;
-
-	if (remove(local_file.c_str())) {
-		LOG_ERR(
-			"Err %d: %s '%s'\n", errno, strerror(errno), local_file.c_str());
-		return -1;
-	}
-
-	return 0;
-}
-
-int32_t SftpRemote::mkdir_local(SftpWatch_t* ctx, DirItem_t* file)
-{
-	std::string local_dir = ctx->local_path + SNOD_SEP + file->name;
-	struct stat st;
-	int32_t     rc = 0;
-
-	struct utimbuf times = {
-		.actime  = (time_t)file->attrs.atime,
-		.modtime = (time_t)file->attrs.mtime,
-	};
-
-	// check if path exists
-	if (stat(local_dir.c_str(), &st) == 0) {
-		// existing path is directory. Return success
-		if (S_ISDIR(st.st_mode)) {
-			// set modified & access time time to match remote
-			utime(local_dir.c_str(), &times);
-			return 0;
-		}
-
-		// TODO: what to do when path exist but not a directory
-		return -1;
-	}
-
-	// create directory if doesn't exist
-#ifdef _POSIX_VERSION
-	rc = mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
-	if (rc) {
-		LOG_ERR("Failed create directory: %d\n", errno);
-		return rc;
-	}
-
-	// set modified & access time time to match remote
-	if (utime(local_dir.c_str(), &times)) {
-		LOG_ERR("Failed to set mtime [%d]\n", errno);
-	}
-#endif
-
-#ifdef _WIN32
-	// NOTE: If the CreateDirectoryA succeeds, the return value is nonzero.
-	rc = CreateDirectoryA(local_dir.c_str(), NULL);
-	if (!rc) LOG_ERR("Failed create directory: %d\n", GetLastError());
-#endif
-
-	return rc;
-}
-
-/*
- * NOTE: using C++ filesystem to remove directory and its contents
- *       ref https://stackoverflow.com/a/50051546/3258981
- * */
-void SftpRemote::rmdir_local(SftpWatch_t* ctx, std::string dirname)
-{
-	std::filesystem::path dirpath(ctx->local_path + SNOD_SEP + dirname);
-
-	if (!std::filesystem::is_directory(dirpath)) return;
-
-	std::filesystem::remove_all(dirpath);
 }
