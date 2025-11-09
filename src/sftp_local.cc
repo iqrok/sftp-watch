@@ -29,7 +29,7 @@
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
-int32_t SftpLocal::remove(SftpWatch_t* ctx, std::string filename)
+int32_t SftpLocal::remove(SftpWatch_t* ctx, std::string& filename)
 {
 	std::string local_file = ctx->local_path + SNOD_SEP + filename;
 
@@ -98,7 +98,7 @@ int32_t SftpLocal::mkdir(SftpWatch_t* ctx, DirItem_t* file)
  * NOTE: using C++ filesystem to remove directory and its contents
  *       ref https://stackoverflow.com/a/50051546/3258981
  * */
-void SftpLocal::rmdir(SftpWatch_t* ctx, std::string dirname)
+void SftpLocal::rmdir(SftpWatch_t* ctx, std::string& dirname)
 {
 	std::filesystem::path dirpath(ctx->local_path + SNOD_SEP + dirname);
 
