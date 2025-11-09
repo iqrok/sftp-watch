@@ -38,49 +38,13 @@ function getEvtColor(evt) {
 }
 
 try {
-	let connectId = SftpWatch.connect(config);
+	const connectId = SftpWatch.connect(config);
 
-	console.time('start');
-	// should be a number and > 0
+	// should yield a number > 0
 	if (!connectId) throw 'Failed to connect to SFTP Server';
 
-	//~ process.on('SIGINT', async () => {
-			//~ console.log("STOPPING");
-			//~ const x = await SftpWatch.stop(connectId);
-			//~ console.log(x);
-			//~ setTimeout(() => process.exit(0), 1000);
-		//~ });
-
-	setTimeout(async () => {
-		const id2 = SftpWatch.connect(config);
-		SftpWatch.sync(id2, (file) => {
-				const dt  = new Date(file.time);
-				const now = new Date();
-				console.log(
-					`***NEW***\t`
-					+ `${now.toLocaleString('Lt-lt')} => `
-					+ `${getEvtColor(file.evt)}[${file.evt}]\x1b[0m `
-					+ `\x1b[3m<type ${file.type}>\x1b[0m `
-					+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
-					+ `${file.perm.toString(8)} `
-					+ `${formatBytes(file.size)} `
-					+ `\x1b[1m\x1b[${file.type == 'f' ? 33 : 36}m${file.name}\x1b[0m `
-				);
-			});
-		}, 30000);
-
-	setTimeout(async () => {
-			//~ console.log("STOPPINGxxx");
-			await SftpWatch.stop(connectId);
-			//~ console.log("STARTED AGAIN");
-
-					console.timeEnd('start');
-					//~ setTimeout(async () => {
-						//~ process.exit(0);
-					//~ }, 10000);
-			}, 5000);
-
-	SftpWatch.sync(connectId, (file) => {
+	// save returned promise for stopping later
+	const sync = SftpWatch.sync(connectId, (file) => {
 			const dt  = new Date(file.time);
 			const now = new Date();
 			console.log(
@@ -92,6 +56,18 @@ try {
 				+ `${formatBytes(file.size)} `
 				+ `\x1b[1m\x1b[${file.type == 'f' ? 33 : 36}m${file.name}\x1b[0m `
 			);
+		});
+
+	process.on('SIGINT', async () => {
+			// request stop for connectId
+			SftpWatch.stop(connectId);
+
+			// wait until sync process is stopped
+			const stoppedId = await sync.then(id => id);
+
+			console.log("\nSTOPPED", stoppedId);
+
+			process.exit(0);
 		});
 } catch (error) {
 	console.error(error);
