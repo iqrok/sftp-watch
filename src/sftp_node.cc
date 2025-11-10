@@ -31,7 +31,7 @@ namespace { // start of unnamed namespace for static function
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
 static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
-static int     sync_dir_loop(SftpWatch_t* ctx, Directory_t& dir);
+static int     sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir);
 static void    sync_dir_thread(SftpWatch_t* ctx);
 static void    sync_dir_finalizer(
 	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
@@ -141,10 +141,109 @@ static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 	ctx->sem.acquire();
 }
 
-static int sync_dir_loop(SftpWatch_t* ctx, Directory_t& dir)
+std::string prv_get_key(std::string root, std::string full)
 {
+	size_t pos = full.find(root);
+
+	if (pos != std::string::npos) {
+		full.erase(pos, root.length());
+		return full.empty() ? std::string(SNOD_SEP) : full;
+	}
+
+	return full;
+}
+
+//~ void prv_print_tree(DirSnapshot_t& list)
+//~ {
+	//~ // get PairFileDet_t from list
+	//~ for (auto& [key, dir] : list) {
+		//~ printf("'%s' =>\n", key.c_str());
+
+		//~ // get DirItem_t from list
+		//~ for (auto& [path, file] : dir) {
+			//~ printf("  '%s' - '%s' <type %c> {%llu bytes} %lo\n", path.c_str(), file.name.c_str(), file.type, file.attrs.filesize, file.attrs.permissions);
+		//~ }
+	//~ }
+	//~ printf("============================================\n");
+//~ }
+
+static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir)
+{
+	std::string snap_key = prv_get_key(ctx->local_path, dir.path);
+	PairFileDet_t& list = ctx->local_snap[snap_key];
+
+	// use set to store current key. No need to store the item
+	std::unordered_set<std::string> current;
+
+	DirItem_t item;
+	int32_t   rc;
+
+	// open local dir first
+	if ((rc = SftpLocal::open_dir(ctx, &dir))) {
+		return -1;
+	}
+
+	// read the opened directory
+	while ((rc = SftpLocal::read_dir(dir, &item))) {
+		if (item.name.empty()) continue;
+
+		std::string key = item.name;
+		current.insert(key);
+
+		// Check for new or modified files
+		bool is_mod = false;
+		bool is_new = !list.contains(key);
+
+		if (!is_new) {
+			is_mod = !SNOD_FILE_SIZE_SAME(list.at(key), item)
+				|| !SNOD_FILE_MTIME_SAME(list.at(key), item);
+		}
+
+		if (!is_new && !is_mod) continue;
+
+		list[key] = item;
+
+		switch (item.type) {
+
+		case IS_DIR: {
+			SftpLocal::mkdir(ctx, &item);
+
+			// TODO: check subdirectory depth before add it into list
+			Directory_t sub;
+			sub.rela = item.name;
+
+			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
+			if (pos != std::string::npos) {
+				sub.path = dir.path + SNOD_SEP + item.name.substr(pos + 1);
+			} else {
+				sub.path = dir.path + SNOD_SEP + item.name;
+			}
+
+			ctx->local_dirs[item.name] = sub;
+		} break;
+
+		default: {
+			/*
+			 * NOTE: to avoid double copy, use pointer of item saved in `list`.
+			 *       `list` has lifetime long enough until downloads are done.
+			 * */
+			ctx->uploads.push_back(&list.at(key));
+		} break;
+		}
+		//~ printf("'%s' <type %c> %llu bytes %lo | %lu\n", item.name.c_str(), item.type, item.attrs.filesize, item.attrs.permissions, item.attrs.mtime);
+	}
+
+	// close opened dir
+	SftpLocal::close_dir(ctx, &dir);
+
+	return 0;
+}
+
+static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir)
+{
+	std::string snap_key = prv_get_key(ctx->remote_path, dir.path);
 	// we're gonna need pair for the directory. So, create it anyway use []
-	PairFileDet_t& list = ctx->snapshots[dir.path];
+	PairFileDet_t& list = ctx->remote_snap[snap_key];
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -260,9 +359,19 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 	while (!ctx->is_stopped) {
 		int32_t rc = 0;
 
-		for (auto& [key, dir] : ctx->remote_dirs) {
-			if (ctx->is_stopped || (rc = sync_dir_loop(ctx, dir))) break;
+		for (auto& [key, dir] : ctx->local_dirs) {
+			if (ctx->is_stopped || (rc = sync_dir_local(ctx, dir))) break;
 		}
+
+		for (auto& [key, dir] : ctx->remote_dirs) {
+			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir))) break;
+		}
+
+		//~ printf("==================== LOCAL SNAPSHOT ==========================\n");
+		//~ prv_print_tree(ctx->local_snap);
+
+		//~ printf("=================== REMOTE SNAPSHOT ==========================\n");
+		//~ prv_print_tree(ctx->remote_snap);
 
 		for (auto it = ctx->downloads.begin(); it != ctx->downloads.end();) {
 			if (ctx->is_stopped) {

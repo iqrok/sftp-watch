@@ -15,6 +15,7 @@
 
 #ifdef _POSIX_VERSION
 #	include <netinet/in.h>
+#	include <dirent.h>
 #endif
 
 // default to 30000, as it is the value of max SFTP Packet
@@ -106,6 +107,11 @@ struct Directory_s {
 
 	/** SFTP handle for remote directory. not used for local directory */
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
+
+#ifdef _POSIX_VERSION
+	/** Directory handle for local directory in POSIX. unused for remote */
+	DIR* loc_handle = NULL;
+#endif
 };
 
 struct SftpWatch_s {
@@ -139,16 +145,27 @@ struct SftpWatch_s {
 
 	/**< collection of directory that should be iterated */
 	DirList_t remote_dirs;
-	DirList_t local_dirs;
 
 	/** Snapshot per directory. Containing list of files*/
-	DirSnapshot_t snapshots;
+	DirSnapshot_t remote_snap;
 
 	/** List of files that will be downloaded */
 	std::vector<DirItem_t*> downloads;
 
 	/** List of directory that should be removed from iteration */
 	std::vector<std::string> remote_undirs;
+
+	/**< collection of directory that should be iterated */
+	DirList_t local_dirs;
+
+	/** Snapshot per directory. Containing list of files*/
+	DirSnapshot_t local_snap;
+
+	/** List of files that will be downloaded */
+	std::vector<DirItem_t*> uploads;
+
+	/** List of directory that should be removed from iteration */
+	std::vector<std::string> local_undirs;
 
 	/** pointer to event data for js callback */
 	EvtFile_t* ev_file;

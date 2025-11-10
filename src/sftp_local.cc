@@ -13,6 +13,7 @@
 #	include <sys/time.h>
 #	include <unistd.h>
 #	include <utime.h>
+#	include <dirent.h>
 #elif defined(_WIN32)
 #	include <windows.h>   // general Windows API, timeval replacement
 #	include <io.h>        // _close, _read, _write (instead of unistd.h)
@@ -28,6 +29,123 @@
 #elif
 #	error "UNKNOWN ENVIRONMENT"
 #endif
+
+uint8_t SftpLocal::get_filetype(DirItem_t* file)
+{
+	if (file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
+		if (LIBSSH2_SFTP_S_ISREG(file->attrs.permissions)) {
+			return IS_REG_FILE;
+		} else if (LIBSSH2_SFTP_S_ISDIR(file->attrs.permissions)) {
+			return IS_DIR;
+		} else if (LIBSSH2_SFTP_S_ISLNK(file->attrs.permissions)) {
+			return IS_SYMLINK;
+		} else if (LIBSSH2_SFTP_S_ISCHR(file->attrs.permissions)) {
+			return IS_CHR_FILE;
+		} else if (LIBSSH2_SFTP_S_ISBLK(file->attrs.permissions)) {
+			return IS_BLK_FILE;
+		} else if (LIBSSH2_SFTP_S_ISFIFO(file->attrs.permissions)) {
+			return IS_PIPE;
+		} else if (LIBSSH2_SFTP_S_ISSOCK(file->attrs.permissions)) {
+			return IS_SOCK;
+		} else {
+			return IS_INVALID;
+		}
+	} else {
+		return IS_INVALID;
+	}
+}
+
+int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
+{
+	if (dir->is_opened) SftpLocal::close_dir(ctx, dir);
+
+	errno = 0;
+	if ((dir->loc_handle = opendir(dir->path.c_str())) == NULL) {
+		LOG_ERR("Unable to open local dir '%s' '%s' with SFTP [%d] %s\n",
+			dir->path.c_str(), dir->rela.c_str(), errno, strerror(errno));
+		return errno;
+	}
+
+	dir->is_opened = true;
+
+	return 0;
+
+}
+
+int32_t SftpLocal::close_dir(SftpWatch_t* ctx, Directory_t* dir)
+{
+	(void)ctx;
+
+	if (!dir->is_opened) return 0;
+
+	errno = 0;
+	if (closedir(dir->loc_handle)) {
+		LOG_ERR("Unable to close local dir '%s' '%s' with SFTP [%d] %s\n",
+			dir->path.c_str(), dir->rela.c_str(), errno, strerror(errno));
+		return errno;
+	}
+
+	dir->is_opened = false;
+
+	return 0;
+}
+
+int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
+{
+	errno = 0;
+	struct dirent* dp;
+
+	// readdir error or finished
+	if ((dp = readdir(dir.loc_handle)) == NULL) {
+		if (errno) {
+			LOG_ERR("Unable to read local dir '%s' '%s' with SFTP [%d] %s\n",
+				dir.path.c_str(), dir.rela.c_str(), errno, strerror(errno));
+		}
+
+		return 0;
+	}
+
+	// there's a record
+	struct stat st;
+	std::string name(dp->d_name);
+	std::string abs_path = dir.path + SNOD_SEP + name;
+
+	if (name == "." || name == "..") {
+		file->name           = "";
+		file->type           = IS_INVALID;
+		file->attrs.filesize = 0;
+		file->attrs.mtime    = 0;
+		return 1;
+	}
+
+	errno = 0;
+	if (lstat(abs_path.c_str(), &st)) {
+		LOG_ERR("FAILED lstat '%s' '%s' with SFTP [%d] %s\n",
+			abs_path.c_str(), dp->d_name, errno, strerror(errno));
+		return errno;
+	}
+
+	file->attrs.flags = 0;
+
+	file->attrs.filesize = (libssh2_uint64_t)st.st_size;
+	file->attrs.flags |= (libssh2_uint64_t)st.st_size;
+
+	file->attrs.uid = (unsigned long)st.st_uid;
+	file->attrs.gid = (unsigned long)st.st_gid;
+	file->attrs.flags |= LIBSSH2_SFTP_ATTR_UIDGID;
+
+	file->attrs.permissions = (unsigned long)st.st_mode;
+	file->attrs.flags |= LIBSSH2_SFTP_ATTR_PERMISSIONS;
+
+	file->attrs.atime = (libssh2_uint64_t)st.st_atime;
+	file->attrs.mtime = (libssh2_uint64_t)st.st_mtime;
+	file->attrs.flags |= LIBSSH2_SFTP_ATTR_ACMODTIME;
+
+	file->type = SftpLocal::get_filetype(file);
+	file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
+
+	return 1;
+}
 
 int32_t SftpLocal::remove(SftpWatch_t* ctx, std::string& filename)
 {
