@@ -6,19 +6,19 @@
 		"src/*.cpp",
 		"src/*.hpp",
 		"src/*.h",
-		"lib/*.js",
+		"main.js",
 		"CMakeLists.txt"
 	],
 	"scripts": {
 		"sample": "node sample/index.js",
-		"build:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1",
+		"rebuild:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1 -D CMAKE_BUILD_TYPE=Release",
+		"rebuild:dbg": "cmake-js rebuild -D CMAKE_BUILD_TYPE=Debug",
+		"rebuild": "cmake-js rebuild",
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
-		"rebuild:dbg": "cmake-js rebuild --CDCMAKE_BUILD_TYPE=Debug",
-		"rebuild": "cmake-js rebuild",
 		"postinstall": "npm run compile"
 	},
-	"main": "build/Release/sftp-watch.node",
+	"main": "main.js",
 	"devDependencies": {
 		"cmake-js": "^7.3.1"
 	},
