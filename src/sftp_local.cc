@@ -14,6 +14,8 @@
 #	include <unistd.h>
 #	include <utime.h>
 #	include <dirent.h>
+
+#	define SNOD_RESET_ERRNO() errno = 0;
 #elif defined(_WIN32)
 #	include <windows.h>   // general Windows API, timeval replacement
 #	include <io.h>        // _close, _read, _write (instead of unistd.h)
@@ -23,9 +25,11 @@
 
 #	define write(f, b, c) write((f), (b), (unsigned int)(c))
 
-// TODO: Needs to check these on Windows
 #	define stat           _stat
+#	define lstat          _stat // no equivalent for windows, use _stat
 #	define S_ISDIR(mode)  ((mode) & _S_IFDIR)
+#	define SNOD_RESET_ERRNO() (void)0;
+#	define strerror(...) "Error"
 #elif
 #	error "UNKNOWN ENVIRONMENT"
 #endif
@@ -92,7 +96,7 @@ int32_t SftpLocal::close_dir(SftpWatch_t* ctx, Directory_t* dir)
 
 #if defined(_POSIX_VERSION)
 
-	errno = 0;
+	SNOD_RESET_ERRNO();
 	if (closedir(dir->loc_handle)) {
 		LOG_ERR("Unable to close local dir '%s' '%s' with SFTP [%d] %s\n",
 			dir->path.c_str(), dir->rela.c_str(), errno, strerror(errno));
@@ -121,7 +125,7 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 {
 #if defined(_POSIX_VERSION)
 
-	errno = 0;
+	SNOD_RESET_ERRNO();
 	struct dirent* dp;
 
 	// readdir error or finished
@@ -135,8 +139,53 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 	}
 
 	// there's a record
-	struct stat st;
 	std::string name(dp->d_name);
+
+#elif defined(_WIN32)
+
+	WIN32_FIND_DATAA data;
+	std::string      search_path = dir.path + "\\*";
+
+	/*
+	 * 1. Read the first file if is_opened is false
+	 * 2. Read subsequent files
+	 * */
+
+	if (!dir.is_opened) {
+		/*
+		 * FIXME: when file deleted from remote, since no open_dir is done, the
+		 *        inaccessible directory remains exist.
+		 * */
+		dir.loc_handle = FindFirstFileA(search_path.c_str(), &data);
+
+		if (dir.loc_handle == INVALID_HANDLE_VALUE) {
+			int32_t err = GetLastError();
+			LOG_ERR("Unable to read first local '%s' '%s' [%d]\n",
+				dir.path.c_str(), dir.rela.c_str(), err);
+			return 0;
+		}
+
+		dir.is_opened = true;
+	} else {
+		if (!FindNextFileA(dir.loc_handle, &data)) {
+			int32_t err = GetLastError();
+			if (err != ERROR_NO_MORE_FILES) {
+				LOG_ERR("Unable to read next local '%s' '%s' [%d]\n",
+					dir.path.c_str(), dir.rela.c_str(), err);
+			}
+			return 0;
+		}
+
+	}
+
+	std::string name(data.cFileName);
+
+#else
+#	error "UNKNOWN ENVIRONMENT"
+#endif
+
+	// Common Codes for POSIX and Windows
+	struct stat st;
 	std::string abs_path = dir.path + SNOD_SEP + name;
 
 	if (name == "." || name == "..") {
@@ -147,10 +196,10 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 		return 1;
 	}
 
-	errno = 0;
+	SNOD_RESET_ERRNO();
 	if (lstat(abs_path.c_str(), &st)) {
-		LOG_ERR("FAILED lstat '%s' '%s' with SFTP [%d] %s\n",
-			abs_path.c_str(), dp->d_name, errno, strerror(errno));
+		LOG_ERR("FAILED lstat local file '%s' '%s' [%d] %s\n",
+			abs_path.c_str(), name.c_str(), errno, strerror(errno));
 		return errno;
 	}
 
@@ -174,81 +223,6 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 	file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
 
 	return 1;
-
-#elif defined(_WIN32)
-
-	WIN32_FIND_DATAA data;
-	std::string      search_path = dir.path + "\\*";
-
-	/*
-	 * 1. Read the first file if is_opened is false
-	 * 2. Read subsequent files
-	 * */
-
-	if (!dir.is_opened) {
-		dir.loc_handle = FindFirstFileA(search_path.c_str(), &data);
-
-		if (dir.loc_handle == INVALID_HANDLE_VALUE) {
-			int32_t err = GetLastError();
-			LOG_ERR("Unable to read first local '%s' '%s' [%d]\n",
-				dir.path.c_str(), dir.rela.c_str(), err);
-			return err;
-		}
-
-		dir.is_opened = true;
-	} else {
-		if (!FindNextFileA(dir.loc_handle, &data)) {
-			int32_t err = GetLastError();
-			if (err != ERROR_NO_MORE_FILES) {
-				LOG_ERR("Unable to read next local '%s' '%s' [%d]\n",
-					dir.path.c_str(), dir.rela.c_str(), err);
-			}
-			return 0;
-		}
-
-	}
-
-	struct stat st;
-	std::string name(data.cFileName);
-	std::string abs_path = dir.path + SNOD_SEP + name;
-
-	if (name == "." || name == "..") {
-		file->name           = "";
-		file->type           = IS_INVALID;
-		file->attrs.filesize = 0;
-		file->attrs.mtime    = 0;
-		return 1;
-	}
-
-	if (stat(abs_path.c_str(), &st)) {
-		LOG_ERR("FAILED stat '%s' '%s' with SFTP [%d] %s\n",
-			abs_path.c_str(), name.c_str(), errno, strerror(errno));
-		return errno;
-	}
-
-	file->attrs.flags = 0;
-
-	file->attrs.filesize = (libssh2_uint64_t)st.st_size;
-	file->attrs.flags |= (libssh2_uint64_t)st.st_size;
-
-	// FIXME: Windows doesn't have UID and GID. Any workaround?
-	file->attrs.flags &=~ LIBSSH2_SFTP_ATTR_UIDGID;
-
-	file->attrs.permissions = (unsigned long)st.st_mode;
-	file->attrs.flags |= LIBSSH2_SFTP_ATTR_PERMISSIONS;
-
-	file->attrs.atime = (libssh2_uint64_t)st.st_atime;
-	file->attrs.mtime = (libssh2_uint64_t)st.st_mtime;
-	file->attrs.flags |= LIBSSH2_SFTP_ATTR_ACMODTIME;
-
-	file->type = SftpLocal::get_filetype(file);
-	file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
-
-	return 0;
-
-#else
-#	error "UNKNOWN ENVIRONMENT"
-#endif
 }
 
 int32_t SftpLocal::remove(SftpWatch_t* ctx, std::string& filename)
