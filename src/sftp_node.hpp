@@ -13,9 +13,11 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifdef _POSIX_VERSION
+#if defined(_POSIX_VERSION)
 #	include <netinet/in.h>
 #	include <dirent.h>
+#elif defined(_WIN32)
+#	include <windows.h>
 #endif
 
 // default to 30000, as it is the value of max SFTP Packet
@@ -108,9 +110,11 @@ struct Directory_s {
 	/** SFTP handle for remote directory. not used for local directory */
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
 
-#ifdef _POSIX_VERSION
+#if defined(_POSIX_VERSION)
 	/** Directory handle for local directory in POSIX. unused for remote */
 	DIR* loc_handle = NULL;
+#elif defined(_WIN32)
+	HANDLE loc_handle = NULL;
 #endif
 };
 

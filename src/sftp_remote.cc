@@ -20,9 +20,7 @@
 #	include <sys/stat.h>  // file status
 #	include <sys/utime.h> // _utime(), _utimbuf
 
-#	define write(f, b, c) write((f), (b), (unsigned int)(c))
-
-// TODO: Needs to check these on Windows
+#	define SHUT_RDWR      SD_BOTH
 #	define stat           _stat
 #	define S_ISDIR(mode)  ((mode) & _S_IFDIR)
 #elif
@@ -447,6 +445,10 @@ void SftpRemote::shutdown()
 
 int32_t SftpRemote::copy_symlink(SftpWatch_t* ctx, DirItem_t* file)
 {
+#ifdef _WIN32
+	// FIXME: symlink in windows
+	return SftpRemote::copy_file(ctx, file);
+#else
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 	struct stat st;
@@ -478,6 +480,7 @@ int32_t SftpRemote::copy_symlink(SftpWatch_t* ctx, DirItem_t* file)
 	}
 
 	return rc;
+#endif
 }
 
 int32_t SftpRemote::copy_file(SftpWatch_t* ctx, DirItem_t* file)
