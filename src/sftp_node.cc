@@ -412,6 +412,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 
 			SftpLocal::rmdir(ctx, *it);
 			ctx->remote_dirs.erase(*it);
+			ctx->remote_snap.erase(SNOD_SEP + (*it));
 
 			// remove the vector itself and go to the next iterator
 			it = ctx->remote_undirs.erase(it);
