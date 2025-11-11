@@ -51,6 +51,11 @@
 
 namespace {                    // start of unnamed namespace for static function
 
+enum RemoteOpenDirection_e {
+	SNOD_REMOTE_OPEN_READ  = LIBSSH2_FXF_READ,
+	SNOD_REMOTE_OPEN_WRITE = (LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC),
+};
+
 static bool is_inited = false; /**< Whether libssh2 is initialized or nor */
 
 // Straight copied from example/sftp_RW_nonblock.c
@@ -132,14 +137,14 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 }
 
 static LIBSSH2_SFTP_HANDLE* prv_open_file(
-	SftpWatch_t* ctx, const char* remote_path)
+	SftpWatch_t* ctx, const char* remote_path, uint8_t direction, uint32_t mode)
 {
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
 
 	// try to open remote file and wait until socket ready
 	do {
 		handle = libssh2_sftp_open(
-			ctx->sftp_session, remote_path, LIBSSH2_FXF_READ, 0);
+			ctx->sftp_session, remote_path, direction, (long)mode);
 
 		if (!handle) {
 			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
@@ -443,11 +448,11 @@ void SftpRemote::shutdown()
 	is_inited = false;
 }
 
-int32_t SftpRemote::copy_symlink(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpRemote::down_symlink(SftpWatch_t* ctx, DirItem_t* file)
 {
 #ifdef _WIN32
 	// FIXME: symlink in windows
-	return SftpRemote::copy_file(ctx, file);
+	return SftpRemote::down_file(ctx, file);
 #else
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
@@ -483,15 +488,81 @@ int32_t SftpRemote::copy_symlink(SftpWatch_t* ctx, DirItem_t* file)
 #endif
 }
 
-int32_t SftpRemote::copy_file(SftpWatch_t* ctx, DirItem_t* file)
+int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 {
 	int32_t rc = 0;
 
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 
-	LIBSSH2_SFTP_HANDLE* handle   = prv_open_file(ctx, remote_file.c_str());
-	FILE*                fd_local = fopen(local_file.c_str(), "wb");
+	LIBSSH2_SFTP_HANDLE* handle
+		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
+
+	FILE* fd_local = fopen(local_file.c_str(), "rb");
+
+	if (!fd_local) {
+		LOG_ERR("Error opening file!\n");
+		return -2;
+	}
+
+	// connection loop, check if socket is ready
+	int32_t nwritten = 0;
+	do {
+		char*   ptr;
+		char    mem[SFTP_READ_BUFFER_SIZE];
+
+		int32_t nread  = fread(mem, 1, SFTP_READ_BUFFER_SIZE, fd_local);
+		if (nread <= 0) {
+			break;
+		}
+
+		rc  = 0;
+		ptr = mem;
+
+		// write to remote untill all read bytes are written
+		do {
+			while (FN_RC_EAGAIN(nwritten, libssh2_sftp_write(handle, ptr, nread))) {
+				// negative is error, 0 is timeout
+				int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
+				if (wait_rc == 0) {
+					rc = LIBSSH2_ERROR_TIMEOUT;
+					LOG_ERR("SFTP upload timed out: %d\n", rc);
+					break;
+				} else if (wait_rc < 0) {
+					rc = errno;
+					LOG_ERR("SFTP upload error: %d\n", rc);
+					break;
+				} else {
+					// no error. continue
+					rc = 0;
+				}
+			}
+
+			if (nwritten < 0) break;
+
+			ptr = &mem[nwritten];
+			nread -= nwritten;
+		} while (nread > 0 && !rc);
+	} while (nwritten > 0);
+
+	// close both sftp and file handle
+	libssh2_sftp_close(handle);
+	fclose(fd_local);
+
+	return rc;
+}
+
+int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
+{
+	int32_t rc = 0;
+
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
+
+	LIBSSH2_SFTP_HANDLE* handle
+		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_READ, 0);
+
+	FILE* fd_local = fopen(local_file.c_str(), "wb");
 
 	if (!fd_local) {
 		LOG_ERR("Error opening file!\n");

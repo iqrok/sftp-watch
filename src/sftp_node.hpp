@@ -105,6 +105,7 @@ struct DirItem_s {
 
 struct Directory_s {
 	bool        is_opened = false; /**< Directory open status */
+	uint8_t     level = 0;
 	std::string rela;              /**< path relative to root path */
 	std::string path;              /**< absoulte path */
 
