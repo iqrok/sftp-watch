@@ -33,11 +33,11 @@ typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
 static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
-static int     sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
-static int     sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
-static void    sync_dir_thread(SftpWatch_t* ctx);
-static void    sync_dir_finalizer(
-	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
+static int  sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
+static int  sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
+static void sync_dir_thread(SftpWatch_t* ctx);
+static void sync_dir_finalizer(
+	Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
 static void sync_dir_tsfn_cb(
 	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx);
 
@@ -158,22 +158,23 @@ std::string prv_get_key(std::string root, std::string full)
 
 //~ void prv_print_tree(DirSnapshot_t& list)
 //~ {
-	//~ // get PathFile_t from list
-	//~ for (auto& [key, dir] : list) {
-		//~ printf("'%s' =>\n", key.c_str());
+//~ // get PathFile_t from list
+//~ for (auto& [key, dir] : list) {
+//~ printf("'%s' =>\n", key.c_str());
 
-		//~ // get DirItem_t from list
-		//~ for (auto& [path, file] : dir) {
-			//~ printf("  '%s' - '%s' <type %c> {%llu bytes} %lo\n", path.c_str(), file.name.c_str(), file.type, file.attrs.filesize, file.attrs.permissions);
-		//~ }
-	//~ }
-	//~ printf("============================================\n");
+//~ // get DirItem_t from list
+//~ for (auto& [path, file] : dir) {
+//~ printf("  '%s' - '%s' <type %c> {%llu bytes} %lo\n", path.c_str(),
+//file.name.c_str(), file.type, file.attrs.filesize, file.attrs.permissions);
+//~ }
+//~ }
+//~ printf("============================================\n");
 //~ }
 
 static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->local_path, dir.path);
-	PathFile_t& list = ctx->local_snap[snap_key];
+	PathFile_t& list     = ctx->local_snap[snap_key];
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -256,7 +257,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->remote_path, dir.path);
 	// we're gonna need pair for the directory. So, create it anyway use []
-	PathFile_t& list = ctx->remote_snap[snap_key];
+	PathFile_t& list     = ctx->remote_snap[snap_key];
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -389,7 +390,8 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
 
 			if (!(b_path && l_path && r_path))
-			printf("%d: DIR '%s' PATH '%s' [%d, %d, %d]\n", ++cnt, dir.c_str(), path.c_str(), b_path, l_path, r_path);
+				printf("%d: DIR '%s' PATH '%s' [%d, %d, %d]\n", ++cnt,
+					dir.c_str(), path.c_str(), b_path, l_path, r_path);
 
 			if (!b_path && !l_path && r_path) {
 				// download
@@ -414,27 +416,36 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 				//~ printf("DEL BASE '%s'\n", path.c_str());
 				ctx->base_snap.at(dir).erase(path);
 			} else if (b_path && l_path && r_path) {
-				bool lb_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
-				bool rb_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+				bool lb_diff
+					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
+						ctx->local_snap.at(dir).at(path));
+				bool rb_diff
+					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
+						ctx->remote_snap.at(dir).at(path));
 
 				if (!lb_diff && !rb_diff) continue;
 
 				if (lb_diff && !rb_diff) {
 					// upload
 					//~ printf("UPLOAD MOD   '%s'\n", path.c_str());
-					ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
+					ctx->base_snap[dir][path]
+						= ctx->local_snap.at(dir).at(path);
 					ctx->uploads.push_back(&ctx->base_snap[dir][path]);
 				} else if (!lb_diff && rb_diff) {
 					// download
 					//~ printf("DOWNLOAD MOD '%s'\n", path.c_str());
-					ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
+					ctx->base_snap[dir][path]
+						= ctx->remote_snap.at(dir).at(path);
 					ctx->downloads.push_back(&ctx->base_snap[dir][path]);
 				} else if (lb_diff && rb_diff) {
-					bool lr_diff = SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+					bool lr_diff
+						= SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path),
+							ctx->remote_snap.at(dir).at(path));
 					if (lr_diff) {
 						// download
 						//~ printf("DOWNLOAD MOD 2 '%s'\n", path.c_str());
-						ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
+						ctx->base_snap[dir][path]
+							= ctx->remote_snap.at(dir).at(path);
 						ctx->downloads.push_back(&ctx->base_snap[dir][path]);
 					}
 				} else {
@@ -460,16 +471,17 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		}
 
 		for (auto& [key, dir] : ctx->remote_dirs) {
-			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir, &ins))) break;
+			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir, &ins)))
+				break;
 		}
 
 		compare_snapshots(ctx, ins);
 
-		//~ printf("==================== LOCAL SNAPSHOT ==========================\n");
-		//~ prv_print_tree(ctx->local_snap);
+		//~ printf("==================== LOCAL SNAPSHOT
+		//==========================\n"); ~ prv_print_tree(ctx->local_snap);
 
-		//~ printf("=================== REMOTE SNAPSHOT ==========================\n");
-		//~ prv_print_tree(ctx->remote_snap);
+		//~ printf("=================== REMOTE SNAPSHOT
+		//==========================\n"); ~ prv_print_tree(ctx->remote_snap);
 
 		for (auto it = ctx->downloads.begin(); it != ctx->downloads.end();) {
 			if (ctx->is_stopped) {
@@ -505,8 +517,13 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			switch ((*it)->type) {
 
 			case IS_REG_FILE: {
-				printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
+				//~ printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
 				SftpRemote::up_file(ctx, (*it));
+			} break;
+
+			case IS_DIR: {
+				//~ printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
+				SftpRemote::mkdir(ctx, (*it));
 			} break;
 
 			default: {

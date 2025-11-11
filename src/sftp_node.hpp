@@ -36,8 +36,9 @@
 
 #define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
 #define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
-#define SNOD_FILE_IS_DIFF(f1, f2)    (!SNOD_FILE_SIZE_SAME(f1, f2) || !SNOD_FILE_MTIME_SAME(f1, f2))
-#define SNOD_FILE_PERM(attr)         (attr.permissions & 0777)
+#define SNOD_FILE_IS_DIFF(f1, f2)                                              \
+	(!SNOD_FILE_SIZE_SAME(f1, f2) || !SNOD_FILE_MTIME_SAME(f1, f2))
+#define SNOD_FILE_PERM(attr) (attr.permissions & 0777)
 
 #define SNOD_SEP      "/"
 #define SNOD_SEP_CHAR SNOD_SEP[0]
@@ -63,7 +64,12 @@
 #endif
 
 #define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
-#define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
+
+#ifndef NDEBUG
+#	define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#	define LOG_DBG(...) ((void)0)
+#endif
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -105,7 +111,7 @@ struct DirItem_s {
 
 struct Directory_s {
 	bool        is_opened = false; /**< Directory open status */
-	uint8_t     level = 0;
+	uint8_t     level     = 0;
 	std::string rela;              /**< path relative to root path */
 	std::string path;              /**< absoulte path */
 

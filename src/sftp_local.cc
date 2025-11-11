@@ -25,11 +25,11 @@
 
 #	define write(f, b, c) write((f), (b), (unsigned int)(c))
 
-#	define stat           _stat
-#	define lstat          _stat // no equivalent for windows, use _stat
-#	define S_ISDIR(mode)  ((mode) & _S_IFDIR)
+#	define stat               _stat
+#	define lstat              _stat // no equivalent for windows, use _stat
+#	define S_ISDIR(mode)      ((mode) & _S_IFDIR)
 #	define SNOD_RESET_ERRNO() (void)0;
-#	define strerror(...) "Error"
+#	define strerror(...)      "Error"
 #elif
 #	error "UNKNOWN ENVIRONMENT"
 #endif
@@ -85,7 +85,6 @@ int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 #else
 #	error "UNKNOWN ENVIRONMENT"
 #endif
-
 }
 
 int32_t SftpLocal::close_dir(SftpWatch_t* ctx, Directory_t* dir)
@@ -175,7 +174,6 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 			}
 			return 0;
 		}
-
 	}
 
 	std::string name(data.cFileName);
@@ -198,8 +196,8 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 
 	SNOD_RESET_ERRNO();
 	if (lstat(abs_path.c_str(), &st)) {
-		LOG_ERR("FAILED lstat local file '%s' '%s' [%d] %s\n",
-			abs_path.c_str(), name.c_str(), errno, strerror(errno));
+		LOG_ERR("FAILED lstat local file '%s' '%s' [%d] %s\n", abs_path.c_str(),
+			name.c_str(), errno, strerror(errno));
 		return errno;
 	}
 

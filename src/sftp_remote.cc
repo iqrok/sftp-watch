@@ -20,15 +20,15 @@
 #	include <sys/stat.h>  // file status
 #	include <sys/utime.h> // _utime(), _utimbuf
 
-#	define SHUT_RDWR      SD_BOTH
-#	define stat           _stat
-#	define S_ISDIR(mode)  ((mode) & _S_IFDIR)
+#	define SHUT_RDWR     SD_BOTH
+#	define stat          _stat
+#	define S_ISDIR(mode) ((mode) & _S_IFDIR)
 #elif
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
-#include "sftp_remote.hpp"
 #include "sftp_local.hpp"
+#include "sftp_remote.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -49,11 +49,12 @@
 		} while (0)
 #endif
 
-namespace {                    // start of unnamed namespace for static function
+namespace { // start of unnamed namespace for static function
 
 enum RemoteOpenDirection_e {
-	SNOD_REMOTE_OPEN_READ  = LIBSSH2_FXF_READ,
-	SNOD_REMOTE_OPEN_WRITE = (LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC),
+	SNOD_REMOTE_OPEN_READ = LIBSSH2_FXF_READ,
+	SNOD_REMOTE_OPEN_WRITE
+	= (LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC),
 };
 
 static bool is_inited = false; /**< Whether libssh2 is initialized or nor */
@@ -495,8 +496,8 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 
-	LIBSSH2_SFTP_HANDLE* handle
-		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
+	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str(),
+		SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
 
 	FILE* fd_local = fopen(local_file.c_str(), "rb");
 
@@ -508,10 +509,10 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	// connection loop, check if socket is ready
 	int32_t nwritten = 0;
 	do {
-		char*   ptr;
-		char    mem[SFTP_READ_BUFFER_SIZE];
+		char* ptr;
+		char  mem[SFTP_READ_BUFFER_SIZE];
 
-		int32_t nread  = fread(mem, 1, SFTP_READ_BUFFER_SIZE, fd_local);
+		int32_t nread = fread(mem, 1, SFTP_READ_BUFFER_SIZE, fd_local);
 		if (nread <= 0) {
 			break;
 		}
@@ -521,7 +522,8 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 
 		// write to remote untill all read bytes are written
 		do {
-			while (FN_RC_EAGAIN(nwritten, libssh2_sftp_write(handle, ptr, nread))) {
+			while (FN_RC_EAGAIN(
+				nwritten, libssh2_sftp_write(handle, ptr, nread))) {
 				// negative is error, 0 is timeout
 				int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
 				if (wait_rc == 0) {
@@ -626,6 +628,43 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		LOG_ERR("Failed to set attributes: %d\n", errno);
 	}
 #endif
+
+	return rc;
+}
+
+int32_t SftpRemote::mkdir(SftpWatch_t* ctx, DirItem_t* dir)
+{
+	int32_t rc = 0;
+
+	std::string remote_dir = ctx->remote_path + SNOD_SEP + dir->name;
+
+	long mode = SNOD_FILE_PERM(dir->attrs);
+	while (FN_RC_EAGAIN(
+		rc, libssh2_sftp_mkdir(ctx->sftp_session, remote_dir.c_str(), mode)));
+
+	return rc;
+}
+
+int32_t SftpRemote::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
+{
+	int32_t rc = 0;
+
+	std::string remote_dir = ctx->remote_path + SNOD_SEP + dir->name;
+
+	while (FN_RC_EAGAIN(
+		rc, libssh2_sftp_rmdir(ctx->sftp_session, remote_dir.c_str())));
+
+	return rc;
+}
+
+int32_t SftpRemote::remove(SftpWatch_t* ctx, DirItem_t* file)
+{
+	int32_t rc = 0;
+
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+
+	while (FN_RC_EAGAIN(
+		rc, libssh2_sftp_unlink(ctx->sftp_session, remote_file.c_str())));
 
 	return rc;
 }
