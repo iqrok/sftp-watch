@@ -36,6 +36,7 @@
 
 #define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
 #define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
+#define SNOD_FILE_IS_DIFF(f1, f2)    (!SNOD_FILE_SIZE_SAME(f1, f2) || !SNOD_FILE_MTIME_SAME(f1, f2))
 #define SNOD_FILE_PERM(attr)         (attr.permissions & 0777)
 
 #define SNOD_SEP      "/"
@@ -87,9 +88,9 @@ typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
 typedef struct Directory_s Directory_t;
 
-typedef std::map<std::string, DirItem_t>     PairFileDet_t;
-typedef std::map<std::string, Directory_t>   DirList_t;
-typedef std::map<std::string, PairFileDet_t> DirSnapshot_t;
+typedef std::map<std::string, Directory_t> DirList_t;
+typedef std::map<std::string, DirItem_t>   PathFile_t;
+typedef std::map<std::string, PathFile_t>  DirSnapshot_t;
 
 struct DirItem_s {
 	/** Type of file as stated in #FileType_e */
@@ -148,6 +149,9 @@ struct SftpWatch_s {
 	std::binary_semaphore    sem;
 
 	/**< collection of directory that should be iterated */
+	DirSnapshot_t base_snap;
+
+	/**< collection of directory that should be iterated */
 	DirList_t remote_dirs;
 
 	/** Snapshot per directory. Containing list of files*/
@@ -192,8 +196,8 @@ struct SftpWatch_s {
 		, sem(0) // semaphore is initially locked
 		, is_stopped(false)
 	{
-		this->remote_dirs[this->remote_path] = remote_dir;
-		this->local_dirs[this->local_path]   = local_dir;
+		this->remote_dirs["/"] = remote_dir;
+		this->local_dirs["/"]  = local_dir;
 	}
 };
 

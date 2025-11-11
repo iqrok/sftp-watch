@@ -28,10 +28,16 @@ struct EvtFile_s {
 
 namespace { // start of unnamed namespace for static function
 
+typedef struct AllIns_e {
+	std::unordered_set<std::string> dir;
+	std::unordered_set<std::string> path;
+} AllIns_t;
+
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
 static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
-static int     sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir);
+static int     sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
+static int     sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
 static void    sync_dir_thread(SftpWatch_t* ctx);
 static void    sync_dir_finalizer(
 	   Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
@@ -155,7 +161,7 @@ std::string prv_get_key(std::string root, std::string full)
 
 //~ void prv_print_tree(DirSnapshot_t& list)
 //~ {
-	//~ // get PairFileDet_t from list
+	//~ // get PathFile_t from list
 	//~ for (auto& [key, dir] : list) {
 		//~ printf("'%s' =>\n", key.c_str());
 
@@ -167,10 +173,10 @@ std::string prv_get_key(std::string root, std::string full)
 	//~ printf("============================================\n");
 //~ }
 
-static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir)
+static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->local_path, dir.path);
-	PairFileDet_t& list = ctx->local_snap[snap_key];
+	PathFile_t& list = ctx->local_snap[snap_key];
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -182,6 +188,8 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir)
 	if ((rc = SftpLocal::open_dir(ctx, &dir))) {
 		return -1;
 	}
+
+	ins->dir.insert(snap_key);
 
 	// read the opened directory
 	while ((rc = SftpLocal::read_dir(dir, &item))) {
@@ -202,6 +210,7 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir)
 		if (!is_new && !is_mod) continue;
 
 		list[key] = item;
+		ins->path.insert(key);
 
 		switch (item.type) {
 
@@ -239,11 +248,11 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir)
 	return 0;
 }
 
-static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir)
+static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->remote_path, dir.path);
 	// we're gonna need pair for the directory. So, create it anyway use []
-	PairFileDet_t& list = ctx->remote_snap[snap_key];
+	PathFile_t& list = ctx->remote_snap[snap_key];
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -257,6 +266,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir)
 		return -1;
 	}
 
+	ins->dir.insert(snap_key);
 	ctx->err_count = 0;
 
 	// read the opened directory
@@ -278,6 +288,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir)
 		if (!is_new && !is_mod) continue;
 
 		list[key] = item;
+		ins->path.insert(key);
 
 		switch (item.type) {
 
@@ -354,18 +365,82 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir)
 	return 0;
 }
 
+void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
+{
+	for (const auto& dir : ins.dir) {
+		bool b_dir = ctx->base_snap.contains(dir);
+		bool l_dir = ctx->local_snap.contains(dir);
+		bool r_dir = ctx->remote_snap.contains(dir);
+
+		for (const auto& path : ins.path) {
+			bool b_path = b_dir && ctx->base_snap.at(dir).contains(path);
+			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
+			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
+
+			if (!b_path && !l_path && r_path) {
+				// download
+				printf("DOWNLOAD '%s'\n", path.c_str());
+				ctx->base_snap[dir][path] = ctx->remote_snap[dir][path];
+			} else if (!b_path && l_path && !r_path) {
+				// upload
+				printf("UPLOAD   '%s'\n", path.c_str());
+				ctx->base_snap[dir][path] = ctx->local_snap[dir][path];
+			} else if (b_path && l_path && !r_path) {
+				// remove local
+				printf("DEL LOCAL '%s'\n", path.c_str());
+				ctx->base_snap.at(dir).erase(path);
+			} else if (b_path && !l_path && r_path) {
+				// remove remote
+				printf("DEL REMOTE '%s'\n", path.c_str());
+				ctx->base_snap.at(dir).erase(path);
+			} else if (b_path && !l_path && !r_path) {
+				// remove base
+				printf("DEL BASE '%s'\n", path.c_str());
+				ctx->base_snap.at(dir).erase(path);
+			} else if (b_path && l_path && r_path) {
+				bool l_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
+				bool r_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+
+				if (l_diff && !r_diff) {
+					// upload
+					printf("UPLOAD MOD   '%s'\n", path.c_str());
+					ctx->base_snap[dir][path] = ctx->local_snap[dir][path];
+				} else if (!l_diff && r_diff) {
+					// download
+					printf("DOWNLOAD MOD '%s'\n", path.c_str());
+					ctx->base_snap[dir][path] = ctx->remote_snap[dir][path];
+				} else if (l_diff && r_diff) {
+					bool lr_diff = SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+					if (lr_diff) {
+						// download
+						printf("DOWNLOAD MOD '%s'\n", path.c_str());
+						ctx->base_snap[dir][path] = ctx->remote_snap[dir][path];
+					}
+				} else {
+					// none exists remove base
+				}
+			} else {
+				// all paths have no diff, continue
+			}
+		}
+	}
+}
+
 static void sync_dir_thread(SftpWatch_t* ctx)
 {
 	while (!ctx->is_stopped) {
-		int32_t rc = 0;
+		int32_t  rc = 0;
+		AllIns_t ins;
 
 		for (auto& [key, dir] : ctx->local_dirs) {
-			if (ctx->is_stopped || (rc = sync_dir_local(ctx, dir))) break;
+			if (ctx->is_stopped || (rc = sync_dir_local(ctx, dir, &ins))) break;
 		}
 
 		for (auto& [key, dir] : ctx->remote_dirs) {
-			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir))) break;
+			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir, &ins))) break;
 		}
+
+		compare_snapshots(ctx, ins);
 
 		//~ printf("==================== LOCAL SNAPSHOT ==========================\n");
 		//~ prv_print_tree(ctx->local_snap);
