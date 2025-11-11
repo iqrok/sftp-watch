@@ -30,6 +30,13 @@ namespace { // start of unnamed namespace for static function
 
 typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 
+typedef struct SyncQueue_s {
+	std::vector<DirItem_t*> up;
+	std::vector<DirItem_t*> down;
+	std::vector<DirItem_t> del_u;
+	std::vector<DirItem_t> del_d;
+} SyncQueue_t;
+
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
 static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
@@ -375,7 +382,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	return 0;
 }
 
-static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
+static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 {
 	uint32_t cnt = 0;
 
@@ -397,19 +404,21 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 				// download
 				//~ printf("DOWNLOAD '%s'\n", path.c_str());
 				ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
-				ctx->downloads.push_back(&ctx->base_snap[dir][path]);
+				que->down.push_back(&ctx->base_snap[dir][path]);
 			} else if (!b_path && l_path && !r_path) {
 				// upload
 				//~ printf("UPLOAD   '%s'\n", path.c_str());
 				ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
-				ctx->uploads.push_back(&ctx->base_snap[dir][path]);
+				que->up.push_back(&ctx->base_snap[dir][path]);
 			} else if (b_path && l_path && !r_path) {
 				// remove local
 				//~ printf("DEL LOCAL '%s'\n", path.c_str());
+				que->del_d.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && r_path) {
 				// remove remote
 				//~ printf("DEL REMOTE '%s'\n", path.c_str());
+				que->del_u.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && !r_path) {
 				// remove base
@@ -430,13 +439,13 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 					//~ printf("UPLOAD MOD   '%s'\n", path.c_str());
 					ctx->base_snap[dir][path]
 						= ctx->local_snap.at(dir).at(path);
-					ctx->uploads.push_back(&ctx->base_snap[dir][path]);
+					que->up.push_back(&ctx->base_snap[dir][path]);
 				} else if (!lb_diff && rb_diff) {
 					// download
 					//~ printf("DOWNLOAD MOD '%s'\n", path.c_str());
 					ctx->base_snap[dir][path]
 						= ctx->remote_snap.at(dir).at(path);
-					ctx->downloads.push_back(&ctx->base_snap[dir][path]);
+					que->down.push_back(&ctx->base_snap[dir][path]);
 				} else if (lb_diff && rb_diff) {
 					bool lr_diff
 						= SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path),
@@ -446,7 +455,7 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 						//~ printf("DOWNLOAD MOD 2 '%s'\n", path.c_str());
 						ctx->base_snap[dir][path]
 							= ctx->remote_snap.at(dir).at(path);
-						ctx->downloads.push_back(&ctx->base_snap[dir][path]);
+						que->down.push_back(&ctx->base_snap[dir][path]);
 					}
 				} else {
 					// no diff at all. Should not be reached
@@ -465,17 +474,21 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 	while (!ctx->is_stopped) {
 		int32_t  rc = 0;
 		AllIns_t ins;
+		SyncQueue_t que;
 
 		for (auto& [key, dir] : ctx->local_dirs) {
-			if (ctx->is_stopped || (rc = sync_dir_local(ctx, dir, &ins))) break;
+			if (ctx->is_stopped || (rc = sync_dir_local(ctx, dir, &ins))) {
+				break;
+			}
 		}
 
 		for (auto& [key, dir] : ctx->remote_dirs) {
-			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir, &ins)))
+			if (ctx->is_stopped || (rc = sync_dir_remote(ctx, dir, &ins))) {
 				break;
+			}
 		}
 
-		compare_snapshots(ctx, ins);
+		compare_snapshots(ctx, ins, &que);
 
 		//~ printf("==================== LOCAL SNAPSHOT
 		//==========================\n"); ~ prv_print_tree(ctx->local_snap);
@@ -483,9 +496,9 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		//~ printf("=================== REMOTE SNAPSHOT
 		//==========================\n"); ~ prv_print_tree(ctx->remote_snap);
 
-		for (auto it = ctx->downloads.begin(); it != ctx->downloads.end();) {
+		for (auto it = que.down.begin(); it != que.down.end();) {
 			if (ctx->is_stopped) {
-				ctx->downloads.clear();
+				que.down.clear();
 				break;
 			}
 
@@ -505,12 +518,12 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			}
 
 			// remove the vector itself and go to the next iterator
-			it = ctx->downloads.erase(it);
+			it = que.down.erase(it);
 		}
 
-		for (auto it = ctx->uploads.begin(); it != ctx->uploads.end();) {
+		for (auto it = que.up.begin(); it != que.up.end();) {
 			if (ctx->is_stopped) {
-				ctx->uploads.clear();
+				que.up.clear();
 				break;
 			}
 
@@ -532,7 +545,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			}
 
 			// remove the vector itself and go to the next iterator
-			it = ctx->uploads.erase(it);
+			it = que.up.erase(it);
 		}
 
 		/*
