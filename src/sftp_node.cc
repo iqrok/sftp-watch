@@ -242,6 +242,41 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		//~ printf("'%s' <type %c> %llu bytes %lo | %lu\n", item.name.c_str(), item.type, item.attrs.filesize, item.attrs.permissions, item.attrs.mtime);
 	}
 
+	for (auto it = list.begin(); it != list.end();) {
+		if (current.find(it->first) != current.end()) {
+			++it;
+			continue;
+		}
+
+		DirItem_t* old = &it->second;
+
+		//~ switch (old->type) {
+
+		//~ case IS_DIR: {
+			//~ /*
+			 //~ * Pushing back into waiting list to be processed later when dir
+			 //~ * loop has been finished
+			 //~ * */
+			//~ ctx->remote_undirs.push_back(old->name);
+		//~ } break;
+
+		//~ default: {
+			//~ /*
+			 //~ * NOTE: any file type should be safe enough to be remove directly,
+			 //~ *       right?
+			 //~ * */
+			//~ SftpLocal::remove(ctx, old);
+		//~ } break;
+		//~ }
+
+		list.erase(snap_key);
+		ins->path.insert(old->name);
+
+		//~ sync_dir_js_call(ctx, old, EVT_FILE_DEL);
+
+		it = list.erase(it);
+	}
+
 	// close opened dir
 	SftpLocal::close_dir(ctx, &dir);
 
@@ -354,6 +389,9 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		} break;
 		}
 
+		list.erase(snap_key);
+		ins->path.insert(old->name);
+
 		sync_dir_js_call(ctx, old, EVT_FILE_DEL);
 
 		it = list.erase(it);
@@ -376,6 +414,8 @@ void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 			bool b_path = b_dir && ctx->base_snap.at(dir).contains(path);
 			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
+
+			printf("PATH '%s' [%d, %d, %d]\n", path.c_str(), b_path, l_path, r_path);
 
 			if (!b_path && !l_path && r_path) {
 				// download
