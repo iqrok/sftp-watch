@@ -28,10 +28,7 @@ struct EvtFile_s {
 
 namespace { // start of unnamed namespace for static function
 
-typedef struct AllIns_e {
-	std::unordered_set<std::string> dir;
-	std::unordered_set<std::string> path;
-} AllIns_t;
+typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
@@ -189,7 +186,7 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		return -1;
 	}
 
-	ins->dir.insert(snap_key);
+	ins->insert({ snap_key, {} });
 
 	// read the opened directory
 	while ((rc = SftpLocal::read_dir(dir, &item))) {
@@ -202,15 +199,11 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		bool is_mod = false;
 		bool is_new = !list.contains(key);
 
-		if (!is_new) {
-			is_mod = !SNOD_FILE_SIZE_SAME(list.at(key), item)
-				|| !SNOD_FILE_MTIME_SAME(list.at(key), item);
-		}
-
+		if (!is_new) is_mod = SNOD_FILE_IS_DIFF(list.at(key), item);
 		if (!is_new && !is_mod) continue;
 
 		list[key] = item;
-		ins->path.insert(key);
+		ins->at(snap_key).insert(key);
 
 		switch (item.type) {
 
@@ -270,7 +263,8 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		//~ }
 
 		list.erase(snap_key);
-		ins->path.insert(old->name);
+		ins->at(snap_key).insert(old->name);
+		//~ ins->path.insert(old->name);
 
 		//~ sync_dir_js_call(ctx, old, EVT_FILE_DEL);
 
@@ -301,7 +295,8 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		return -1;
 	}
 
-	ins->dir.insert(snap_key);
+	//~ ins->dir.insert(snap_key);
+	ins->insert({ snap_key, {} });
 	ctx->err_count = 0;
 
 	// read the opened directory
@@ -315,15 +310,13 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		bool is_mod = false;
 		bool is_new = !list.contains(key);
 
-		if (!is_new) {
-			is_mod = !SNOD_FILE_SIZE_SAME(list.at(key), item)
-				|| !SNOD_FILE_MTIME_SAME(list.at(key), item);
-		}
+		if (!is_new) is_mod = SNOD_FILE_IS_DIFF(list.at(key), item);
 
 		if (!is_new && !is_mod) continue;
 
 		list[key] = item;
-		ins->path.insert(key);
+		//~ ins->path.insert(key);
+		ins->at(snap_key).insert(key);
 
 		switch (item.type) {
 
@@ -390,7 +383,8 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		}
 
 		list.erase(snap_key);
-		ins->path.insert(old->name);
+		ins->at(snap_key).insert(old->name);
+		//~ ins->path.insert(old->name);
 
 		sync_dir_js_call(ctx, old, EVT_FILE_DEL);
 
@@ -403,28 +397,30 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	return 0;
 }
 
-void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
+static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 {
-	for (const auto& dir : ins.dir) {
+	uint32_t cnt = 0;
+
+	for (const auto& [dir, lpath] : ins) {
 		bool b_dir = ctx->base_snap.contains(dir);
 		bool l_dir = ctx->local_snap.contains(dir);
 		bool r_dir = ctx->remote_snap.contains(dir);
 
-		for (const auto& path : ins.path) {
+		for (const auto& path : lpath) {
 			bool b_path = b_dir && ctx->base_snap.at(dir).contains(path);
 			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
 
-			printf("PATH '%s' [%d, %d, %d]\n", path.c_str(), b_path, l_path, r_path);
+			printf("%d: DIR '%s' PATH '%s' [%d, %d, %d]\n", ++cnt, dir.c_str(), path.c_str(), b_path, l_path, r_path);
 
 			if (!b_path && !l_path && r_path) {
 				// download
 				printf("DOWNLOAD '%s'\n", path.c_str());
-				ctx->base_snap[dir][path] = ctx->remote_snap[dir][path];
+				ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
 			} else if (!b_path && l_path && !r_path) {
 				// upload
 				printf("UPLOAD   '%s'\n", path.c_str());
-				ctx->base_snap[dir][path] = ctx->local_snap[dir][path];
+				ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
 			} else if (b_path && l_path && !r_path) {
 				// remove local
 				printf("DEL LOCAL '%s'\n", path.c_str());
@@ -438,32 +434,36 @@ void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins)
 				printf("DEL BASE '%s'\n", path.c_str());
 				ctx->base_snap.at(dir).erase(path);
 			} else if (b_path && l_path && r_path) {
-				bool l_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
-				bool r_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+				bool lb_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
+				bool rb_diff = SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
 
-				if (l_diff && !r_diff) {
+				if (!lb_diff && !rb_diff) continue;
+
+				if (lb_diff && !rb_diff) {
 					// upload
 					printf("UPLOAD MOD   '%s'\n", path.c_str());
-					ctx->base_snap[dir][path] = ctx->local_snap[dir][path];
-				} else if (!l_diff && r_diff) {
+					ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
+				} else if (!lb_diff && rb_diff) {
 					// download
 					printf("DOWNLOAD MOD '%s'\n", path.c_str());
-					ctx->base_snap[dir][path] = ctx->remote_snap[dir][path];
-				} else if (l_diff && r_diff) {
+					ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
+				} else if (lb_diff && rb_diff) {
 					bool lr_diff = SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
 					if (lr_diff) {
 						// download
-						printf("DOWNLOAD MOD '%s'\n", path.c_str());
-						ctx->base_snap[dir][path] = ctx->remote_snap[dir][path];
+						printf("DOWNLOAD MOD 2 '%s'\n", path.c_str());
+						ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
 					}
 				} else {
-					// none exists remove base
+					// no diff at all. Should not be reached
 				}
 			} else {
 				// all paths have no diff, continue
 			}
 		}
 	}
+
+	// TODO: Erase empty base
 }
 
 static void sync_dir_thread(SftpWatch_t* ctx)
@@ -527,7 +527,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 
 			SftpLocal::rmdir(ctx, *it);
 			ctx->remote_dirs.erase(*it);
-			ctx->remote_snap.erase(SNOD_SEP + (*it));
+			//~ ctx->remote_snap.erase(SNOD_SEP + (*it));
 
 			// remove the vector itself and go to the next iterator
 			it = ctx->remote_undirs.erase(it);
