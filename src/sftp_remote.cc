@@ -40,6 +40,8 @@
 #define FN_ACTUAL_ERROR(err)   ((err) != LIBSSH2_ERROR_EAGAIN)
 #define FN_LAST_ERRNO_ERROR(s) FN_ACTUAL_ERROR(libssh2_session_last_errno(s))
 
+#define SNOD_WAIT_STABLE 250
+
 #ifdef LOG_DBG
 #	define LOG_DBG_FINGERPRINT(fp)                                            \
 		do {                                                                   \
@@ -503,7 +505,7 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	bool                    is_stable = false;
 	SftpLocal::filestat(ctx, local_file, &attrs);
 	while (!is_stable) {
-		SNOD_DELAY_MS(10);
+		SNOD_DELAY_MS(SNOD_WAIT_STABLE);
 
 		SftpLocal::filestat(ctx, local_file, &attrs);
 		is_stable = file->attrs.filesize == attrs.filesize;
@@ -592,7 +594,7 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 	bool                    is_stable = false;
 	SftpRemote::filestat(ctx, remote_file, &attrs);
 	while (!is_stable) {
-		SNOD_DELAY_MS(10);
+		SNOD_DELAY_MS(SNOD_WAIT_STABLE);
 
 		SftpRemote::filestat(ctx, remote_file, &attrs);
 		is_stable = file->attrs.filesize == attrs.filesize;

@@ -69,6 +69,18 @@ static bool is_file_same(PathFile_t& list, std::string& key, DirItem_t& item)
 	return !SNOD_FILE_IS_DIFF(list.at(key), item);
 }
 
+std::string prv_get_key(std::string root, std::string full)
+{
+	size_t pos = full.find(root);
+
+	if (pos != std::string::npos) {
+		full.erase(pos, root.length());
+		return full.empty() ? std::string(SNOD_SEP) : full;
+	}
+
+	return full;
+}
+
 static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 {
 	if (ctx->is_connected) SftpRemote::disconnect(ctx);
@@ -157,22 +169,11 @@ static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
 	ctx->sem.acquire();
 }
 
-std::string prv_get_key(std::string root, std::string full)
-{
-	size_t pos = full.find(root);
-
-	if (pos != std::string::npos) {
-		full.erase(pos, root.length());
-		return full.empty() ? std::string(SNOD_SEP) : full;
-	}
-
-	return full;
-}
-
 static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->local_path, dir.path);
 	PathFile_t& list     = ctx->local_snap[snap_key];
+	DirList_t&  dirs     = ctx->local_dirs;
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -202,12 +203,11 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 
 		if (item.type == IS_DIR) {
 			// TODO: check subdirectory depth before add it into list
-			std::string parent_key = (dir.rela == "") ? SNOD_SEP : dir.rela;
+			std::string parent_key = (dir.rela == "") ? "/" : dir.rela;
 
 			Directory_t sub;
-			sub.parent = &ctx->remote_dirs.at(parent_key);
-			sub.rela   = item.name;
-			sub.level  = sub.parent->level + 1;
+			sub.rela  = item.name;
+			sub.depth = dirs.at(parent_key).depth + 1;
 
 			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
 			if (pos != std::string::npos) {
@@ -216,7 +216,7 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 				sub.path = dir.path + SNOD_SEP + item.name;
 			}
 
-			ctx->local_dirs[item.name] = sub;
+			dirs[item.name] = sub;
 		}
 	}
 
@@ -243,6 +243,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	std::string snap_key = prv_get_key(ctx->remote_path, dir.path);
 	// we're gonna need pair for the directory. So, create it anyway use []
 	PathFile_t& list     = ctx->remote_snap[snap_key];
+	DirList_t&  dirs     = ctx->remote_dirs;
 
 	// use set to store current key. No need to store the item
 	std::unordered_set<std::string> current;
@@ -273,14 +274,12 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		ins->at(snap_key).insert(key);
 
 		if (item.type == IS_DIR) {
-			SftpLocal::mkdir(ctx, &item);
-
 			// TODO: check subdirectory depth before add it into list
 			std::string parent = (dir.rela == "") ? SNOD_SEP : dir.rela;
 
 			Directory_t sub;
 			sub.rela  = item.name;
-			sub.level = ctx->remote_dirs.at(parent).level + 1;
+			sub.depth = dirs.at(parent).depth + 1;
 
 			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
 			if (pos != std::string::npos) {
@@ -289,7 +288,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 				sub.path = dir.path + SNOD_SEP + item.name;
 			}
 
-			ctx->remote_dirs[item.name] = sub;
+			dirs[item.name] = sub;
 		}
 
 		//~ sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
@@ -326,7 +325,6 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 
 static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 {
-	uint32_t                        cnt = 0;
 	std::unordered_set<std::string> walked_dir;
 
 	for (const auto& [dir, lpath] : ins) {
@@ -347,31 +345,26 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 
 			if (!b_path && !l_path && r_path) {
 				// download
-				//~ printf("DOWNLOAD '%s'\n", path.c_str());
 				ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
 				que->r_new.push_back(&ctx->base_snap[dir][path]);
 			} else if (!b_path && l_path && !r_path) {
 				// upload
-				//~ printf("UPLOAD '%s'\n", path.c_str());
 				ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
 				que->l_new.push_back(&ctx->base_snap[dir][path]);
 			} else if (b_path && l_path && !r_path) {
 				// remote removed
-				//~ printf("REMOTE REMOVED '%s'\n", path.c_str());
 				que->r_del.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
 				ctx->remote_snap.at(dir).erase(path);
 				ctx->local_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && r_path) {
 				// local removed
-				//~ printf("LOCAL REMOVED '%s'\n", path.c_str());
 				que->r_del.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
 				ctx->remote_snap.at(dir).erase(path);
 				ctx->local_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && !r_path) {
 				// remove base
-				//~ ctx->base_snap.at(dir).erase(path);
 			} else if (b_path && l_path && r_path) {
 				bool lb_diff
 					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
@@ -425,13 +418,7 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 			continue;
 		}
 
-		bool l_dir = ctx->local_snap.contains(dir);
-		bool r_dir = ctx->remote_snap.contains(dir);
-
 		for (auto& [path, item] : contents) {
-			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
-			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
-
 			que->r_del.push_back(ctx->local_snap.at(dir).at(path));
 			que->l_del.push_back(ctx->remote_snap.at(dir).at(path));
 
@@ -460,7 +447,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		}
 
 		SftpLocal::remove(ctx, item);
-		int32_t rem = SftpRemote::remove(ctx, item);
+		SftpRemote::remove(ctx, item);
 	}
 
 	for (auto it = que.r_del.begin(); it != que.r_del.end(); ++it) {
@@ -490,6 +477,11 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		}
 
 		switch ((*it)->type) {
+
+		case IS_DIR: {
+			//~ printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
+			SftpLocal::mkdir(ctx, (*it));
+		} break;
 
 		case IS_SYMLINK: {
 			SftpRemote::down_symlink(ctx, *it);

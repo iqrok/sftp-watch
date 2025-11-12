@@ -111,11 +111,9 @@ struct DirItem_s {
 
 struct Directory_s {
 	bool        is_opened = false; /**< Directory open status */
-	uint8_t     level     = 0;
+	uint8_t     depth     = 0;
 	std::string rela;              /**< path relative to root path */
 	std::string path;              /**< absoulte path */
-
-	struct Directory_s* parent;
 
 	/** SFTP handle for remote directory. not used for local directory */
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
