@@ -31,10 +31,10 @@ namespace { // start of unnamed namespace for static function
 typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 
 typedef struct SyncQueue_s {
-	std::vector<DirItem_t*> up;
-	std::vector<DirItem_t*> down;
-	std::vector<DirItem_t> del_u;
-	std::vector<DirItem_t> del_d;
+	std::vector<DirItem_t*> l_new;
+	std::vector<DirItem_t*> r_new;
+	std::vector<DirItem_t> r_del;
+	std::vector<DirItem_t> l_del;
 } SyncQueue_t;
 
 /* ************************* Forward Declare ******************************* */
@@ -63,6 +63,12 @@ static uint32_t                                   ids = 0;
 static std::unordered_map<uint32_t, SftpWatch_t*> watchers;
 
 /* ************************* Implementations ******************************* */
+static bool is_file_same(PathFile_t& list, std::string& key, DirItem_t& item)
+{
+	if (!list.contains(key)) return false;
+	return !SNOD_FILE_IS_DIFF(list.at(key), item);
+}
+
 static int32_t connect_or_reconnect(SftpWatch_t* ctx)
 {
 	if (ctx->is_connected) SftpRemote::disconnect(ctx);
@@ -200,27 +206,23 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	while ((rc = SftpLocal::read_dir(dir, &item))) {
 		if (item.name.empty()) continue;
 
-		std::string key = item.name;
+		std::string& key = item.name;
 		current.insert(key);
 
 		// Check for new or modified files
-		bool is_mod = false;
-		bool is_new = !list.contains(key);
-
-		if (!is_new) is_mod = SNOD_FILE_IS_DIFF(list.at(key), item);
-		if (!is_new && !is_mod) continue;
+		if (is_file_same(list, key, item)) continue;
 
 		list[key] = item;
 		ins->at(snap_key).insert(key);
 
-		switch (item.type) {
-
-		case IS_DIR: {
-			SftpLocal::mkdir(ctx, &item);
-
+		if (item.type == IS_DIR) {
 			// TODO: check subdirectory depth before add it into list
+			std::string parent_key = (dir.rela == "") ? SNOD_SEP : dir.rela;
+
 			Directory_t sub;
-			sub.rela = item.name;
+			sub.parent = &ctx->remote_dirs.at(parent_key);
+			sub.rela  = item.name;
+			sub.level = sub.parent->level + 1;
 
 			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
 			if (pos != std::string::npos) {
@@ -230,15 +232,6 @@ static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 			}
 
 			ctx->local_dirs[item.name] = sub;
-		} break;
-
-		default: {
-			/*
-			 * NOTE: to avoid double copy, use pointer of item saved in `list`.
-			 *       `list` has lifetime long enough until downloads are done.
-			 * */
-			//~ ctx->uploads.push_back(&list.at(key));
-		} break;
 		}
 	}
 
@@ -285,28 +278,24 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	while ((rc = SftpRemote::read_dir(dir, &item))) {
 		if (item.name.empty()) continue;
 
-		std::string key = item.name;
+		std::string& key = item.name;
 		current.insert(key);
 
 		// Check for new or modified files
-		bool is_mod = false;
-		bool is_new = !list.contains(key);
-
-		if (!is_new) is_mod = SNOD_FILE_IS_DIFF(list.at(key), item);
-
-		if (!is_new && !is_mod) continue;
+		if (is_file_same(list, key, item)) continue;
 
 		list[key] = item;
 		ins->at(snap_key).insert(key);
 
-		switch (item.type) {
-
-		case IS_DIR: {
+		if (item.type == IS_DIR) {
 			SftpLocal::mkdir(ctx, &item);
 
 			// TODO: check subdirectory depth before add it into list
+			std::string parent = (dir.rela == "") ? SNOD_SEP : dir.rela;
+
 			Directory_t sub;
-			sub.rela = item.name;
+			sub.rela  = item.name;
+			sub.level = ctx->remote_dirs.at(parent).level + 1;
 
 			size_t pos = item.name.find_last_of(SNOD_SEP_CHAR);
 			if (pos != std::string::npos) {
@@ -315,24 +304,11 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 				sub.path = dir.path + SNOD_SEP + item.name;
 			}
 
-			/* ****
-			std::string parent = (dir.rela == "") ? "/" : dir.rela;
-			sub.level = ctx->remote_dirs.at(parent).level + 1;
-			*/
-
 			ctx->remote_dirs[item.name] = sub;
-		} break;
-
-		default: {
-			/*
-			 * NOTE: to avoid double copy, use pointer of item saved in `list`.
-			 *       `list` has lifetime long enough until downloads are done.
-			 * */
-			//~ ctx->downloads.push_back(&list.at(key));
-		} break;
 		}
 
-		sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
+		//~ sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
+		sync_dir_js_call(ctx, &item, EVT_FILE_NEW);
 	}
 
 	/*
@@ -356,7 +332,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 			 * Pushing back into waiting list to be processed later when dir
 			 * loop has been finished
 			 * */
-			ctx->remote_undirs.push_back(old->name);
+			//~ ctx->remote_undirs.push_back(old->name);
 		} break;
 
 		default: {
@@ -364,7 +340,7 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 			 * NOTE: any file type should be safe enough to be remove directly,
 			 *       right?
 			 * */
-			SftpLocal::remove(ctx, old);
+			//~ SftpLocal::remove(ctx, old);
 		} break;
 		}
 
@@ -385,8 +361,10 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 {
 	uint32_t cnt = 0;
+	std::unordered_set<std::string> walked_dir;
 
 	for (const auto& [dir, lpath] : ins) {
+		walked_dir.insert(dir);
 		bool b_dir = ctx->base_snap.contains(dir);
 		bool l_dir = ctx->local_snap.contains(dir);
 		bool r_dir = ctx->remote_snap.contains(dir);
@@ -396,34 +374,38 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
 
-			if (!(b_path && l_path && r_path))
+			if (!(b_path && l_path && r_path)) {
 				printf("%d: DIR '%s' PATH '%s' [%d, %d, %d]\n", ++cnt,
 					dir.c_str(), path.c_str(), b_path, l_path, r_path);
+			}
 
 			if (!b_path && !l_path && r_path) {
 				// download
-				//~ printf("DOWNLOAD '%s'\n", path.c_str());
+				printf("DOWNLOAD '%s'\n", path.c_str());
 				ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
-				que->down.push_back(&ctx->base_snap[dir][path]);
+				que->r_new.push_back(&ctx->base_snap[dir][path]);
 			} else if (!b_path && l_path && !r_path) {
 				// upload
-				//~ printf("UPLOAD   '%s'\n", path.c_str());
+				printf("UPLOAD '%s'\n", path.c_str());
 				ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
-				que->up.push_back(&ctx->base_snap[dir][path]);
+				que->l_new.push_back(&ctx->base_snap[dir][path]);
 			} else if (b_path && l_path && !r_path) {
-				// remove local
-				//~ printf("DEL LOCAL '%s'\n", path.c_str());
-				que->del_d.push_back(ctx->base_snap.at(dir).at(path));
+				// remote removed
+				printf("REMOTE REMOVED '%s'\n", path.c_str());
+				que->r_del.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
+				ctx->remote_snap.at(dir).erase(path);
+				ctx->local_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && r_path) {
-				// remove remote
-				//~ printf("DEL REMOTE '%s'\n", path.c_str());
-				que->del_u.push_back(ctx->base_snap.at(dir).at(path));
+				// local removed
+				printf("LOCAL REMOVED '%s'\n", path.c_str());
+				que->r_del.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
+				ctx->remote_snap.at(dir).erase(path);
+				ctx->local_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && !r_path) {
 				// remove base
-				//~ printf("DEL BASE '%s'\n", path.c_str());
-				ctx->base_snap.at(dir).erase(path);
+				//~ ctx->base_snap.at(dir).erase(path);
 			} else if (b_path && l_path && r_path) {
 				bool lb_diff
 					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
@@ -436,26 +418,23 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 
 				if (lb_diff && !rb_diff) {
 					// upload
-					//~ printf("UPLOAD MOD   '%s'\n", path.c_str());
 					ctx->base_snap[dir][path]
 						= ctx->local_snap.at(dir).at(path);
-					que->up.push_back(&ctx->base_snap[dir][path]);
+					que->l_new.push_back(&ctx->base_snap[dir][path]);
 				} else if (!lb_diff && rb_diff) {
 					// download
-					//~ printf("DOWNLOAD MOD '%s'\n", path.c_str());
 					ctx->base_snap[dir][path]
 						= ctx->remote_snap.at(dir).at(path);
-					que->down.push_back(&ctx->base_snap[dir][path]);
+					que->r_new.push_back(&ctx->base_snap[dir][path]);
 				} else if (lb_diff && rb_diff) {
 					bool lr_diff
 						= SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path),
 							ctx->remote_snap.at(dir).at(path));
 					if (lr_diff) {
 						// download
-						//~ printf("DOWNLOAD MOD 2 '%s'\n", path.c_str());
 						ctx->base_snap[dir][path]
 							= ctx->remote_snap.at(dir).at(path);
-						que->down.push_back(&ctx->base_snap[dir][path]);
+						que->r_new.push_back(&ctx->base_snap[dir][path]);
 					}
 				} else {
 					// no diff at all. Should not be reached
@@ -467,6 +446,36 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 	}
 
 	// TODO: Erase empty base
+	for (auto it = ctx->base_snap.begin(); it != ctx->base_snap.end(); ) {
+		//~ auto& [dir, contents] : ctx->base_snap
+		const std::string& dir      = it->first;
+		PathFile_t&  contents = it->second;
+
+		if (walked_dir.contains(dir)) {
+			++it;
+			continue;
+		}
+
+		bool l_dir = ctx->local_snap.contains(dir);
+		bool r_dir = ctx->remote_snap.contains(dir);
+		printf("Orphaned base '%s' [l:%d, r:%d]\n", dir.c_str(), l_dir, r_dir);
+
+		for (auto& [path, item] : contents) {
+			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
+			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
+			printf("  - Orphaned item '%s' [l:%d, r:%d]\n", path.c_str(), l_path, r_path);
+
+			que->r_del.push_back(ctx->local_snap.at(dir).at(path));
+			que->l_del.push_back(ctx->remote_snap.at(dir).at(path));
+
+			ctx->local_snap.at(dir).erase(path);
+			ctx->remote_snap.at(dir).erase(path);
+		}
+
+		ctx->local_snap.erase(dir);
+		ctx->remote_snap.erase(dir);
+		it = ctx->base_snap.erase(it);
+	}
 }
 
 static void sync_dir_thread(SftpWatch_t* ctx)
@@ -490,15 +499,46 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 
 		compare_snapshots(ctx, ins, &que);
 
-		//~ printf("==================== LOCAL SNAPSHOT
-		//==========================\n"); ~ prv_print_tree(ctx->local_snap);
+		std::vector<DirItem_t*> dir_rem;
+		for (auto it = que.l_del.begin(); it != que.l_del.end(); ++it) {
+			if (ctx->is_stopped) break;
 
-		//~ printf("=================== REMOTE SNAPSHOT
-		//==========================\n"); ~ prv_print_tree(ctx->remote_snap);
+			DirItem_t* item = &(*it);
 
-		for (auto it = que.down.begin(); it != que.down.end();) {
+			if (item->type == IS_DIR) {
+				dir_rem.push_back(item);
+				continue;
+			}
+
+			SftpLocal::remove(ctx, item);
+			int32_t rem = SftpRemote::remove(ctx, item);
+			printf("Erasing '%s' status %d\n", item->name.c_str(), rem);
+		}
+
+		//~ for (auto it = dir_rem.begin(); it != dir_rem.end(); ++it) {
+			//~ ctx->local_dirs.erase((*it)->name);
+			//~ ctx->remote_dirs.erase((*it)->name);
+			//~ SftpRemote::rmdir(ctx, (*it));
+		//~ }
+
+		//~ dir_rem.clear();
+		for (auto it = que.r_del.begin(); it != que.r_del.end(); ++it) {
+			if (ctx->is_stopped) break;
+
+			DirItem_t* item = &(*it);
+
+			if (item->type == IS_DIR) {
+				dir_rem.push_back(item);
+				continue;
+			}
+
+			SftpRemote::remove(ctx, item);
+			SftpLocal::remove(ctx, item);
+		}
+
+		for (auto it = que.r_new.begin(); it != que.r_new.end();) {
 			if (ctx->is_stopped) {
-				que.down.clear();
+				que.r_new.clear();
 				break;
 			}
 
@@ -518,12 +558,12 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			}
 
 			// remove the vector itself and go to the next iterator
-			it = que.down.erase(it);
+			it = que.r_new.erase(it);
 		}
 
-		for (auto it = que.up.begin(); it != que.up.end();) {
+		for (auto it = que.l_new.begin(); it != que.l_new.end();) {
 			if (ctx->is_stopped) {
-				que.up.clear();
+				que.l_new.clear();
 				break;
 			}
 
@@ -545,7 +585,15 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			}
 
 			// remove the vector itself and go to the next iterator
-			it = que.up.erase(it);
+			it = que.l_new.erase(it);
+		}
+
+		for (auto it = dir_rem.begin(); it != dir_rem.end(); ++it) {
+			ctx->local_dirs.erase((*it)->name);
+			ctx->remote_dirs.erase((*it)->name);
+			SftpLocal::rmdir(ctx, (*it));
+			int rem = SftpRemote::rmdir(ctx, (*it));
+			printf("erasing '%s' [ %d]\n", (*it)->name.c_str(), rem);
 		}
 
 		/*
@@ -557,15 +605,6 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		 *
 		 * TODO: check if dir is removed or renamed
 		 * */
-		for (auto it = ctx->remote_undirs.begin();
-			it != ctx->remote_undirs.end();) {
-
-			SftpLocal::rmdir(ctx, *it);
-			ctx->remote_dirs.erase(*it);
-
-			// remove the vector itself and go to the next iterator
-			it = ctx->remote_undirs.erase(it);
-		}
 
 		if (ctx->err_count >= ctx->max_err_count && !ctx->is_stopped) {
 			int16_t reconnect_delay = ctx->delay_ms;
@@ -581,7 +620,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 		SNOD_THREAD_WAIT(SNOD_PRV_WAIT_MS, ctx->delay_ms, !ctx->is_stopped);
 	}
 
-	// Cleaning up
+	// Cleanup
 	ctx->tsfn.Release();
 }
 

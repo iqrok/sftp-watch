@@ -115,6 +115,8 @@ struct Directory_s {
 	std::string rela;              /**< path relative to root path */
 	std::string path;              /**< absoulte path */
 
+	struct Directory_s* parent;
+
 	/** SFTP handle for remote directory. not used for local directory */
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
 

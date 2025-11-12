@@ -632,6 +632,18 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 	return rc;
 }
 
+int32_t SftpRemote::remove(SftpWatch_t* ctx, DirItem_t* file)
+{
+	int32_t rc = 0;
+
+	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
+
+	while (FN_RC_EAGAIN(
+		rc, libssh2_sftp_unlink(ctx->sftp_session, remote_file.c_str())));
+
+	return rc;
+}
+
 int32_t SftpRemote::mkdir(SftpWatch_t* ctx, DirItem_t* dir)
 {
 	int32_t rc = 0;
@@ -651,20 +663,38 @@ int32_t SftpRemote::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
 
 	std::string remote_dir = ctx->remote_path + SNOD_SEP + dir->name;
 
+	Directory_t target;
+	target.rela = dir->name;
+	target.path = remote_dir;
+
+	printf("ERASING DIR '%s'\n", target.path.c_str());
+
+	// open remote dir first
+	if ((rc = SftpRemote::open_dir(ctx, &target))) return rc;
+
+	DirItem_t item;
+	while ((rc = SftpRemote::read_dir(target, &item))) {
+		if (item.name.empty()) continue;
+
+		if (item.type == IS_DIR) {
+			DirItem_t subdir;
+			subdir.name = item.name;
+			printf("  - ERASING SUBDIR '%s'\n", subdir.name.c_str());
+			SftpRemote::rmdir(ctx, &subdir);
+		} else {
+			printf("  - ERASING FILE '%s'\n", item.name.c_str());
+			SftpRemote::remove(ctx, &item);
+		}
+	}
+
+	SftpRemote::close_dir(ctx, &target);
+
 	while (FN_RC_EAGAIN(
 		rc, libssh2_sftp_rmdir(ctx->sftp_session, remote_dir.c_str())));
 
-	return rc;
-}
-
-int32_t SftpRemote::remove(SftpWatch_t* ctx, DirItem_t* file)
-{
-	int32_t rc = 0;
-
-	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
-
-	while (FN_RC_EAGAIN(
-		rc, libssh2_sftp_unlink(ctx->sftp_session, remote_file.c_str())));
+	if (rc) {
+		printf("UNABLE to remove '%s' [%d]\n", remote_dir.c_str(), rc);
+	}
 
 	return rc;
 }
