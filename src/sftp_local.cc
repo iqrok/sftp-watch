@@ -34,6 +34,29 @@
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
+namespace {
+
+static void conv_stat_attrs(LIBSSH2_SFTP_ATTRIBUTES* attrs, struct stat* st)
+{
+	attrs->flags = 0;
+
+	attrs->filesize = (libssh2_uint64_t)st->st_size;
+	attrs->flags |= (libssh2_uint64_t)st->st_size;
+
+	attrs->uid = (unsigned long)st->st_uid;
+	attrs->gid = (unsigned long)st->st_gid;
+	attrs->flags |= LIBSSH2_SFTP_ATTR_UIDGID;
+
+	attrs->permissions = (unsigned long)st->st_mode;
+	attrs->flags |= LIBSSH2_SFTP_ATTR_PERMISSIONS;
+
+	attrs->atime = (libssh2_uint64_t)st->st_atime;
+	attrs->mtime = (libssh2_uint64_t)st->st_mtime;
+	attrs->flags |= LIBSSH2_SFTP_ATTR_ACMODTIME;
+}
+
+}
+
 uint8_t SftpLocal::get_filetype(DirItem_t* file)
 {
 	if (file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
@@ -304,4 +327,22 @@ void SftpLocal::rmdir(SftpWatch_t* ctx, std::string& dirname)
 void SftpLocal::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
 {
 	return SftpLocal::rmdir(ctx, dir->name);
+}
+
+int32_t SftpLocal::filestat(
+	SftpWatch_t* ctx, std::string& path, LIBSSH2_SFTP_ATTRIBUTES* res)
+{
+	(void)ctx;
+	struct stat st;
+
+	SNOD_RESET_ERRNO();
+	if (lstat(path.c_str(), &st)) {
+		LOG_ERR("FAILED lstat local file '%s' [%d] %s\n", path.c_str(), errno,
+			strerror(errno));
+		return errno;
+	}
+
+	conv_stat_attrs(res, &st);
+
+	return 0;
 }

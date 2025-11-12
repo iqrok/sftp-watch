@@ -496,6 +496,21 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
 
+	/*
+	 * FIXME: How to wait until file is stable in non-blocking way?
+	 * */
+	LIBSSH2_SFTP_ATTRIBUTES attrs;
+	bool                    is_stable = false;
+	SftpLocal::filestat(ctx, local_file, &attrs);
+	while (!is_stable) {
+		SNOD_DELAY_MS(10);
+
+		SftpLocal::filestat(ctx, local_file, &attrs);
+		is_stable = file->attrs.filesize == attrs.filesize;
+
+		memcpy(&file->attrs, &attrs, sizeof(attrs));
+	}
+
 	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str(),
 		SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
 
@@ -551,6 +566,15 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	libssh2_sftp_close(handle);
 	fclose(fd_local);
 
+	// set remote stat
+	while (FN_RC_EAGAIN(rc,
+		libssh2_sftp_stat_ex(ctx->sftp_session, remote_file.c_str(),
+			remote_file.size(), LIBSSH2_SFTP_SETSTAT, &file->attrs))) {
+		if (waitsocket(ctx->sock, ctx->session) < 0) break;
+	}
+
+	printf("RC STAT %d\n", rc);
+
 	return rc;
 }
 
@@ -560,6 +584,21 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 
 	std::string remote_file = ctx->remote_path + SNOD_SEP + file->name;
 	std::string local_file  = ctx->local_path + SNOD_SEP + file->name;
+
+	/*
+	 * FIXME: How to wait until file is stable in non-blocking way?
+	 * */
+	LIBSSH2_SFTP_ATTRIBUTES attrs;
+	bool                    is_stable = false;
+	SftpRemote::filestat(ctx, remote_file, &attrs);
+	while (!is_stable) {
+		SNOD_DELAY_MS(10);
+
+		SftpRemote::filestat(ctx, remote_file, &attrs);
+		is_stable = file->attrs.filesize == attrs.filesize;
+
+		memcpy(&file->attrs, &attrs, sizeof(attrs));
+	}
 
 	LIBSSH2_SFTP_HANDLE* handle
 		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_READ, 0);
@@ -667,8 +706,6 @@ int32_t SftpRemote::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
 	target.rela = dir->name;
 	target.path = remote_dir;
 
-	printf("ERASING DIR '%s'\n", target.path.c_str());
-
 	// open remote dir first
 	if ((rc = SftpRemote::open_dir(ctx, &target))) return rc;
 
@@ -679,10 +716,8 @@ int32_t SftpRemote::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
 		if (item.type == IS_DIR) {
 			DirItem_t subdir;
 			subdir.name = item.name;
-			printf("  - ERASING SUBDIR '%s'\n", subdir.name.c_str());
 			SftpRemote::rmdir(ctx, &subdir);
 		} else {
-			printf("  - ERASING FILE '%s'\n", item.name.c_str());
 			SftpRemote::remove(ctx, &item);
 		}
 	}
@@ -692,8 +727,18 @@ int32_t SftpRemote::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
 	while (FN_RC_EAGAIN(
 		rc, libssh2_sftp_rmdir(ctx->sftp_session, remote_dir.c_str())));
 
-	if (rc) {
-		printf("UNABLE to remove '%s' [%d]\n", remote_dir.c_str(), rc);
+	return rc;
+}
+
+int32_t SftpRemote::filestat(
+	SftpWatch_t* ctx, std::string& path, LIBSSH2_SFTP_ATTRIBUTES* attrs)
+{
+	int32_t rc = 0;
+
+	while (FN_RC_EAGAIN(rc,
+		libssh2_sftp_stat_ex(ctx->sftp_session, path.c_str(), path.size(),
+			LIBSSH2_SFTP_LSTAT, attrs))) {
+		if (waitsocket(ctx->sock, ctx->session) < 0) break;
 	}
 
 	return rc;
