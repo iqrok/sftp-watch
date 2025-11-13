@@ -693,6 +693,13 @@ int32_t SftpRemote::mkdir(SftpWatch_t* ctx, DirItem_t* dir)
 	while (FN_RC_EAGAIN(
 		rc, libssh2_sftp_mkdir(ctx->sftp_session, remote_dir.c_str(), mode)));
 
+	// set remote stat
+	while (FN_RC_EAGAIN(rc,
+		libssh2_sftp_stat_ex(ctx->sftp_session, remote_dir.c_str(),
+			remote_dir.size(), LIBSSH2_SFTP_SETSTAT, &dir->attrs))) {
+		if (waitsocket(ctx->sock, ctx->session) < 0) break;
+	}
+
 	return rc;
 }
 
