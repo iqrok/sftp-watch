@@ -575,8 +575,6 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 		if (waitsocket(ctx->sock, ctx->session) < 0) break;
 	}
 
-	printf("RC STAT %d\n", rc);
-
 	return rc;
 }
 
