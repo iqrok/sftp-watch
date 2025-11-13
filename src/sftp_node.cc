@@ -46,7 +46,8 @@ typedef struct SyncQueue_s {
 
 /* ************************* Forward Declare ******************************* */
 static int32_t connect_or_reconnect(SftpWatch_t* ctx);
-static void    sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev);
+
+static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que);
 static int  sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
 static int  sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
 static void sync_dir_thread(SftpWatch_t* ctx);
@@ -54,6 +55,8 @@ static void sync_dir_finalizer(
 	Napi::Env env, void* finalizeData, SftpWatch_t* ctx);
 static void sync_dir_tsfn_cb(
 	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx);
+static void sync_dir_js_call(
+	SftpWatch_t* ctx, DirItem_t* file, bool status, uint8_t ev);
 
 /*
  * to store watcher contexts.
@@ -140,16 +143,16 @@ static void sync_dir_tsfn_cb(
 		obj.Set("evt", Napi::String::New(env, "down"));
 	} break;
 
-	default:{
+	default: {
 	} break;
 	}
 
 	obj.Set("status", Napi::Boolean::New(env, ev->status));
 	obj.Set("name", Napi::String::New(env, ev->file->name));
-	obj.Set("type",	Napi::String::New(env, SNOD_CHR2STR(ev->file->type)));
+	obj.Set("type", Napi::String::New(env, SNOD_CHR2STR(ev->file->type)));
 	obj.Set("size", Napi::Number::New(env, ev->file->attrs.filesize));
-	obj.Set("time",	Napi::Number::New(env, SNOD_SEC2MS(ev->file->attrs.mtime)));
-	obj.Set("perm",	Napi::Number::New(env, SNOD_FILE_PERM(ev->file->attrs)));
+	obj.Set("time", Napi::Number::New(env, SNOD_SEC2MS(ev->file->attrs.mtime)));
+	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(ev->file->attrs)));
 
 	// don't forget to delete the data, since we used dynamic allocation
 	delete ev;
@@ -333,7 +336,7 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 	 * |     0       |      1       |      0       | Upload            |
 	 * |     1       |      1       |      0       | Delete local      |
 	 * |     1       |      0       |      1       | Delete remote     |
-	 * |     1       |      0       |      0       | (Check Orphans)    |
+	 * |     1       |      0       |      0       | (Check Orphans)   |
 	 * |     1       |      1       |      1       | (Check Conflict)  |
 	 *
 	 * Conflict happens when path exists on all snapshots. When remote and local
@@ -457,8 +460,8 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 {
 
-	for (auto it = que.l_del.begin(); it != que.l_del.end(); ++it) {
-		if (ctx->is_stopped) break;
+	for (auto it = que.l_del.begin(); it != que.l_del.end() && !ctx->is_stopped;
+		++it) {
 
 		DirItem_t* item = &(*it);
 
@@ -473,8 +476,8 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		sync_dir_js_call(ctx, item, true, EVT_FILE_LDEL);
 	}
 
-	for (auto it = que.r_del.begin(); it != que.r_del.end(); ++it) {
-		if (ctx->is_stopped) break;
+	for (auto it = que.r_del.begin(); it != que.r_del.end() && !ctx->is_stopped;
+		++it) {
 
 		DirItem_t* item = &(*it);
 
@@ -489,7 +492,8 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		sync_dir_js_call(ctx, item, true, EVT_FILE_RDEL);
 	}
 
-	for (auto it = que.r_new.begin(); it != que.r_new.end(); ++it) {
+	for (auto it = que.r_new.begin(); it != que.r_new.end() && !ctx->is_stopped;
+		++it) {
 
 		switch ((*it)->type) {
 
@@ -514,7 +518,8 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		sync_dir_js_call(ctx, (*it), true, EVT_FILE_DOWN);
 	}
 
-	for (auto it = que.l_new.begin(); it != que.l_new.end(); ++it) {
+	for (auto it = que.l_new.begin(); it != que.l_new.end() && !ctx->is_stopped;
+		++it) {
 
 		switch ((*it)->type) {
 
