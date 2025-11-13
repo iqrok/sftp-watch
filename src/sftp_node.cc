@@ -120,7 +120,9 @@ static void sync_dir_tsfn_cb(
 {
 	Napi::Object obj = Napi::Object::New(env);
 
-	switch (ctx->ev_file->ev) {
+	EvtFile_t* ev = ctx->ev_file;
+
+	switch (ev->ev) {
 
 	case EVT_FILE_RDEL: {
 		obj.Set("evt", Napi::String::New(env, "delR"));
@@ -142,17 +144,15 @@ static void sync_dir_tsfn_cb(
 	} break;
 	}
 
-	obj.Set("name", Napi::String::New(env, ctx->ev_file->file->name));
-	obj.Set("type",
-		Napi::String::New(env, std::string(1, ctx->ev_file->file->type)));
-	obj.Set("size", Napi::Number::New(env, ctx->ev_file->file->attrs.filesize));
-	obj.Set("time",
-		Napi::Number::New(env, SNOD_SEC2MS(ctx->ev_file->file->attrs.mtime)));
-	obj.Set("perm",
-		Napi::Number::New(env, SNOD_FILE_PERM(ctx->ev_file->file->attrs)));
+	obj.Set("status", Napi::Boolean::New(env, ev->status));
+	obj.Set("name", Napi::String::New(env, ev->file->name));
+	obj.Set("type",	Napi::String::New(env, SNOD_CHR2STR(ev->file->type)));
+	obj.Set("size", Napi::Number::New(env, ev->file->attrs.filesize));
+	obj.Set("time",	Napi::Number::New(env, SNOD_SEC2MS(ev->file->attrs.mtime)));
+	obj.Set("perm",	Napi::Number::New(env, SNOD_FILE_PERM(ev->file->attrs)));
 
 	// don't forget to delete the data, since we used dynamic allocation
-	delete ctx->ev_file;
+	delete ev;
 
 	js_cb.Call({ obj });
 
@@ -160,12 +160,14 @@ static void sync_dir_tsfn_cb(
 	ctx->sem.release();
 }
 
-static void sync_dir_js_call(SftpWatch_t* ctx, DirItem_t* file, uint8_t ev)
+static void sync_dir_js_call(
+	SftpWatch_t* ctx, DirItem_t* file, bool status, uint8_t ev)
 {
 	// need to use heap, avoiding data lost when race condition occurs
-	ctx->ev_file       = new EvtFile_t;
-	ctx->ev_file->ev   = ev;
-	ctx->ev_file->file = file;
+	ctx->ev_file         = new EvtFile_t;
+	ctx->ev_file->ev     = ev;
+	ctx->ev_file->status = status;
+	ctx->ev_file->file   = file;
 
 	// BlockingCall() should never fail, since max queue size is 0
 	if (ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
@@ -468,7 +470,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 			SftpRemote::remove(ctx, item);
 		}
 
-		sync_dir_js_call(ctx, item, EVT_FILE_LDEL);
+		sync_dir_js_call(ctx, item, true, EVT_FILE_LDEL);
 	}
 
 	for (auto it = que.r_del.begin(); it != que.r_del.end(); ++it) {
@@ -484,7 +486,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 			SftpLocal::remove(ctx, item);
 		}
 
-		sync_dir_js_call(ctx, item, EVT_FILE_RDEL);
+		sync_dir_js_call(ctx, item, true, EVT_FILE_RDEL);
 	}
 
 	for (auto it = que.r_new.begin(); it != que.r_new.end(); ++it) {
@@ -500,6 +502,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 
 		case IS_REG_FILE: {
+			sync_dir_js_call(ctx, (*it), false, EVT_FILE_DOWN);
 			SftpRemote::down_file(ctx, *it);
 		} break;
 
@@ -508,7 +511,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
-		sync_dir_js_call(ctx, (*it), EVT_FILE_DOWN);
+		sync_dir_js_call(ctx, (*it), true, EVT_FILE_DOWN);
 	}
 
 	for (auto it = que.l_new.begin(); it != que.l_new.end(); ++it) {
@@ -516,6 +519,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		switch ((*it)->type) {
 
 		case IS_REG_FILE: {
+			sync_dir_js_call(ctx, (*it), false, EVT_FILE_UP);
 			SftpRemote::up_file(ctx, (*it));
 		} break;
 
@@ -528,7 +532,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
-		sync_dir_js_call(ctx, (*it), EVT_FILE_UP);
+		sync_dir_js_call(ctx, (*it), true, EVT_FILE_UP);
 	}
 }
 
