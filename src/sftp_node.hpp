@@ -42,7 +42,15 @@
 	std::this_thread::sleep_for(std::chrono::microseconds((us)))
 #define SNOD_DELAY_MS(ms)                                                      \
 	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
-#define SNOD_SEC2MS(s) ((s) * 1000)
+
+#ifndef _WIN32
+#	define SNOD_SEC2MS(s) ((s) * 1000)
+#else
+// cast to double, avoiding overflow value
+#	define SNOD_SEC2MS(s) ((double)(s) * 1000.0)
+#endif
+
+#define SNOD_CHR2STR(s) (std::string(1, (s)))
 
 #ifndef SNOD_HOSTKEY_HASH
 #	define SNOD_HOSTKEY_HASH LIBSSH2_HOSTKEY_HASH_SHA1
