@@ -30,9 +30,10 @@ function formatBytes(size, useBinary = true) {
 
 function getEvtColor(evt) {
 	switch(evt) {
-	case 'del': return '\x1b[1m\x1b[31m';
-	case 'new': return '\x1b[32m';
-	case 'mod': return '\x1b[1m\x1b[32m';
+	case 'delR': return '\x1b[1m\x1b[31m';
+	case 'delL': return '\x1b[1m\x1b[91m';
+	case 'up': return '\x1b[95m';
+	case 'down': return '\x1b[1m\x1b[32m';
 	default   : return '\x1b[0m';
 	}
 }
@@ -49,7 +50,7 @@ try {
 			const now = new Date();
 			console.log(
 				`${now.toLocaleString('Lt-lt')} => `
-				+ `${getEvtColor(file.evt)}[${file.evt}]\x1b[0m `
+				+ `${getEvtColor(file.evt)}[${file.evt.padEnd(4)}]\x1b[0m `
 				+ `\x1b[3m<type ${file.type}>\x1b[0m `
 				+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
 				+ `${file.perm.toString(8)} `
