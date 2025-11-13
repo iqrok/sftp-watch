@@ -13,12 +13,6 @@
 #include "sftp_node_api.hpp"
 #include "sftp_remote.hpp"
 
-struct EvtFile_s {
-	bool       status = false;
-	uint8_t    ev;
-	DirItem_t* file;
-};
-
 #define SNOD_PRV_WAIT_MS 50
 #define SNOD_THREAD_WAIT(i, sum, fl)                                           \
 	do {                                                                       \
@@ -26,7 +20,20 @@ struct EvtFile_s {
 			SNOD_DELAY_MS((i));                                                \
 	} while (0)
 
+struct EvtFile_s {
+	bool       status = false;
+	uint8_t    ev;
+	DirItem_t* file;
+};
+
 namespace { // start of unnamed namespace for static function
+
+enum EventFile_e {
+	EVT_FILE_LDEL = 0x00,
+	EVT_FILE_UP   = 0x01,
+	EVT_FILE_RDEL = 0x02,
+	EVT_FILE_DOWN = 0x03,
+};
 
 typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 
@@ -115,24 +122,24 @@ static void sync_dir_tsfn_cb(
 
 	switch (ctx->ev_file->ev) {
 
-	case EVT_FILE_DEL: {
-		obj.Set("evt", Napi::String::New(env, EVT_STR_DEL));
+	case EVT_FILE_RDEL: {
+		obj.Set("evt", Napi::String::New(env, "delR"));
 	} break;
 
-	case EVT_FILE_NEW: {
-		obj.Set("evt", Napi::String::New(env, EVT_STR_NEW));
+	case EVT_FILE_LDEL: {
+		obj.Set("evt", Napi::String::New(env, "delL"));
 	} break;
 
-	case EVT_FILE_MOD: {
-		obj.Set("evt", Napi::String::New(env, EVT_STR_MOD));
+	case EVT_FILE_UP: {
+		obj.Set("evt", Napi::String::New(env, "up"));
 	} break;
 
-	case EVT_FILE_REN: {
-		obj.Set("evt", Napi::String::New(env, EVT_STR_REN));
+	case EVT_FILE_DOWN: {
+		obj.Set("evt", Napi::String::New(env, "down"));
 	} break;
 
-	default:
-		break;
+	default:{
+	} break;
 	}
 
 	obj.Set("name", Napi::String::New(env, ctx->ev_file->file->name));
@@ -290,17 +297,8 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 
 			dirs[item.name] = sub;
 		}
-
-		//~ sync_dir_js_call(ctx, &item, is_new ? EVT_FILE_NEW : EVT_FILE_MOD);
-		sync_dir_js_call(ctx, &item, EVT_FILE_NEW);
 	}
 
-	/*
-	 * Removal of orphaned directory items.
-	 *
-	 * NOTE: no increment at the end. it will be handled based on condition
-	 *       below
-	 * */
 	for (auto it = list.begin(); it != list.end();) {
 		if (current.find(it->first) != current.end()) {
 			++it;
@@ -312,8 +310,6 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 		list.erase(snap_key);
 		ins->at(snap_key).insert(old->name);
 
-		sync_dir_js_call(ctx, old, EVT_FILE_DEL);
-
 		it = list.erase(it);
 	}
 
@@ -323,8 +319,37 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	return 0;
 }
 
-static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
+static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 {
+	/*
+	 * Compare snapshots to perform 3-way merge. Base snapshot is used as anchor
+	 * To select which operation would be done, will follow this table
+	 *
+	 * | Base Exists | Local Exists | Remote Exist |     Operation     |
+	 * |-------------|--------------|--------------|-------------------|
+	 * |     0       |      0       |      1       | Download          |
+	 * |     0       |      1       |      0       | Upload            |
+	 * |     1       |      1       |      0       | Delete local      |
+	 * |     1       |      0       |      1       | Delete remote     |
+	 * |     1       |      0       |      0       | (Check Orphans)    |
+	 * |     1       |      1       |      1       | (Check Conflict)  |
+	 *
+	 * Conflict happens when path exists on all snapshots. When remote and local
+	 * file is different, remote always wins.
+	 *
+	 * Conflict Resolution is done following this table
+	 *
+	 * | Local != Base | Remote != Base | Local != Remote |     Operation     |
+	 * |---------------|----------------|-----------------|-------------------|
+	 * |      1        |       0        |       -         | Upload            |
+	 * |      0        |       1        |       -         | Download          |
+	 * |      1        |       1        |       1         | Download          |
+	 * |      1        |       1        |       0         | Update Base       |
+	 *
+	 * Orphaned Item is defined as a path whose parent directory no longer
+	 * exists both in remote and local. Orphaned items will be removed from
+	 * all snapshots.
+	 * */
 	std::unordered_set<std::string> walked_dir;
 
 	for (const auto& [dir, lpath] : ins) {
@@ -337,11 +362,6 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 			bool b_path = b_dir && ctx->base_snap.at(dir).contains(path);
 			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
-
-			//~ if (!(b_path && l_path && r_path)) {
-			//~ printf("%d: DIR '%s' PATH '%s' [%d, %d, %d]\n", ++cnt,
-			//~ dir.c_str(), path.c_str(), b_path, l_path, r_path);
-			//~ }
 
 			if (!b_path && !l_path && r_path) {
 				// download
@@ -359,7 +379,7 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 				ctx->local_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && r_path) {
 				// local removed
-				que->r_del.push_back(ctx->base_snap.at(dir).at(path));
+				que->l_del.push_back(ctx->base_snap.at(dir).at(path));
 				ctx->base_snap.at(dir).erase(path);
 				ctx->remote_snap.at(dir).erase(path);
 				ctx->local_snap.at(dir).erase(path);
@@ -434,7 +454,6 @@ static void compare_snapshots(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 
 static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 {
-	std::vector<DirItem_t*> dir_rem;
 
 	for (auto it = que.l_del.begin(); it != que.l_del.end(); ++it) {
 		if (ctx->is_stopped) break;
@@ -442,12 +461,14 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		DirItem_t* item = &(*it);
 
 		if (item->type == IS_DIR) {
-			dir_rem.push_back(item);
-			continue;
+			ctx->local_dirs.erase(item->name);
+			ctx->remote_dirs.erase(item->name);
+			SftpRemote::rmdir(ctx, item);
+		} else {
+			SftpRemote::remove(ctx, item);
 		}
 
-		SftpLocal::remove(ctx, item);
-		SftpRemote::remove(ctx, item);
+		sync_dir_js_call(ctx, item, EVT_FILE_LDEL);
 	}
 
 	for (auto it = que.r_del.begin(); it != que.r_del.end(); ++it) {
@@ -456,30 +477,21 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		DirItem_t* item = &(*it);
 
 		if (item->type == IS_DIR) {
-			dir_rem.push_back(item);
-			continue;
+			ctx->local_dirs.erase(item->name);
+			ctx->remote_dirs.erase(item->name);
+			SftpLocal::rmdir(ctx, item);
+		} else {
+			SftpLocal::remove(ctx, item);
 		}
 
-		SftpRemote::remove(ctx, item);
+		sync_dir_js_call(ctx, item, EVT_FILE_RDEL);
 	}
 
-	for (auto it = dir_rem.begin(); it != dir_rem.end(); ++it) {
-		ctx->local_dirs.erase((*it)->name);
-		ctx->remote_dirs.erase((*it)->name);
-		SftpLocal::rmdir(ctx, (*it));
-		SftpRemote::rmdir(ctx, (*it));
-	}
-
-	for (auto it = que.r_new.begin(); it != que.r_new.end();) {
-		if (ctx->is_stopped) {
-			que.r_new.clear();
-			break;
-		}
+	for (auto it = que.r_new.begin(); it != que.r_new.end(); ++it) {
 
 		switch ((*it)->type) {
 
 		case IS_DIR: {
-			//~ printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
 			SftpLocal::mkdir(ctx, (*it));
 		} break;
 
@@ -496,25 +508,18 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
-		// remove the vector itself and go to the next iterator
-		it = que.r_new.erase(it);
+		sync_dir_js_call(ctx, (*it), EVT_FILE_DOWN);
 	}
 
-	for (auto it = que.l_new.begin(); it != que.l_new.end();) {
-		if (ctx->is_stopped) {
-			que.l_new.clear();
-			break;
-		}
+	for (auto it = que.l_new.begin(); it != que.l_new.end(); ++it) {
 
 		switch ((*it)->type) {
 
 		case IS_REG_FILE: {
-			//~ printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
 			SftpRemote::up_file(ctx, (*it));
 		} break;
 
 		case IS_DIR: {
-			//~ printf("UPLOADING '%s' %c", (*it)->name.c_str(), (*it)->type);
 			SftpRemote::mkdir(ctx, (*it));
 		} break;
 
@@ -523,8 +528,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
-		// remove the vector itself and go to the next iterator
-		it = que.l_new.erase(it);
+		sync_dir_js_call(ctx, (*it), EVT_FILE_UP);
 	}
 }
 
@@ -547,8 +551,7 @@ static void sync_dir_thread(SftpWatch_t* ctx)
 			}
 		}
 
-		compare_snapshots(ctx, ins, &que);
-
+		sync_dir_cmp_snap(ctx, ins, &que);
 		sync_dir_op(ctx, que);
 
 		if (ctx->err_count >= ctx->max_err_count && !ctx->is_stopped) {

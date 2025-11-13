@@ -29,11 +29,6 @@
 #	define SFTP_FILENAME_MAX_LEN 512
 #endif
 
-#define EVT_STR_DEL "del"
-#define EVT_STR_NEW "new"
-#define EVT_STR_MOD "mod"
-#define EVT_STR_REN "ren"
-
 #define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
 #define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
 #define SNOD_FILE_IS_DIFF(f1, f2)                                              \
@@ -80,13 +75,6 @@ enum FileType_e {
 	IS_BLK_FILE = 'b',
 	IS_PIPE     = 'p',
 	IS_SOCK     = 's',
-};
-
-enum EventFile_e {
-	EVT_FILE_DEL,
-	EVT_FILE_NEW,
-	EVT_FILE_MOD,
-	EVT_FILE_REN,
 };
 
 typedef struct EvtFile_s   EvtFile_t;
@@ -155,32 +143,14 @@ struct SftpWatch_s {
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
 
-	/**< collection of directory that should be iterated */
+	/** Snapshots */
 	DirSnapshot_t base_snap;
-
-	/**< collection of directory that should be iterated */
-	DirList_t remote_dirs;
-
-	/** Snapshot per directory. Containing list of files*/
 	DirSnapshot_t remote_snap;
-
-	/** List of files that will be downloaded */
-	std::vector<DirItem_t*> downloads;
-
-	/** List of directory that should be removed from iteration */
-	std::vector<std::string> remote_undirs;
-
-	/**< collection of directory that should be iterated */
-	DirList_t local_dirs;
-
-	/** Snapshot per directory. Containing list of files*/
 	DirSnapshot_t local_snap;
 
-	/** List of files that will be downloaded */
-	std::vector<DirItem_t*> uploads;
-
-	/** List of directory that should be removed from iteration */
-	std::vector<std::string> local_undirs;
+	/** collection of directory that should be iterated */
+	DirList_t remote_dirs;
+	DirList_t local_dirs;
 
 	/** pointer to event data for js callback */
 	EvtFile_t* ev_file;
@@ -203,8 +173,8 @@ struct SftpWatch_s {
 		, sem(0) // semaphore is initially locked
 		, is_stopped(false)
 	{
-		this->remote_dirs["/"] = remote_dir;
-		this->local_dirs["/"]  = local_dir;
+		this->remote_dirs[SNOD_SEP] = remote_dir;
+		this->local_dirs[SNOD_SEP]  = local_dir;
 	}
 };
 
