@@ -224,21 +224,7 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 		return errno;
 	}
 
-	file->attrs.flags = 0;
-
-	file->attrs.filesize = (libssh2_uint64_t)st.st_size;
-	file->attrs.flags |= (libssh2_uint64_t)st.st_size;
-
-	file->attrs.uid = (unsigned long)st.st_uid;
-	file->attrs.gid = (unsigned long)st.st_gid;
-	file->attrs.flags |= LIBSSH2_SFTP_ATTR_UIDGID;
-
-	file->attrs.permissions = (unsigned long)st.st_mode;
-	file->attrs.flags |= LIBSSH2_SFTP_ATTR_PERMISSIONS;
-
-	file->attrs.atime = (libssh2_uint64_t)st.st_atime;
-	file->attrs.mtime = (libssh2_uint64_t)st.st_mtime;
-	file->attrs.flags |= LIBSSH2_SFTP_ATTR_ACMODTIME;
+	conv_stat_attrs(&file->attrs, &st);
 
 	file->type = SftpLocal::get_filetype(file);
 	file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
