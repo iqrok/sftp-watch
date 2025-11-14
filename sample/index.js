@@ -1,4 +1,5 @@
-const SftpWatch = require('..');
+const { SftpWatch } = require('..');
+
 const config = require('./config.js');
 
 // overwrite localPath to use sample/test directory
@@ -39,13 +40,14 @@ function getEvtColor(evt) {
 }
 
 try {
-	const connectId = SftpWatch.connect(config);
+	const sftp = new SftpWatch(config);
+	const connectId = sftp.connect();
 
 	// should yield a number > 0
 	if (!connectId) throw 'Failed to connect to SFTP Server';
 
 	// save returned promise for stopping later
-	const sync = SftpWatch.sync(connectId, (file) => {
+	const sync = sftp.sync((file) => {
 			const dt  = new Date(file.time);
 			const now = new Date();
 			console.log(
@@ -65,7 +67,7 @@ try {
 			console.log("\nSTOPPING ID", connectId);
 
 			// request stop for connectId
-			SftpWatch.stop(connectId);
+			sftp.stop(connectId);
 
 			// wait until sync process is stopped
 			const stoppedId = await sync.then(id => id);

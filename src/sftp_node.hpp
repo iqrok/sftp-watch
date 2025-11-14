@@ -5,6 +5,7 @@
 #include <map>
 #include <semaphore>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <napi.h>
@@ -85,14 +86,52 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
+enum EventFile_e {
+	EVT_FILE_LDEL = 0x00,
+	EVT_FILE_UP   = 0x01,
+	EVT_FILE_RDEL = 0x02,
+	EVT_FILE_DOWN = 0x03,
+};
+
+typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
+
 typedef struct EvtFile_s   EvtFile_t;
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
 typedef struct Directory_s Directory_t;
+typedef struct SyncQueue_s SyncQueue_t;
 
 typedef std::map<std::string, Directory_t> DirList_t;
 typedef std::map<std::string, DirItem_t>   PathFile_t;
 typedef std::map<std::string, PathFile_t>  DirSnapshot_t;
+
+typedef void (*sync_file_cb)(
+	SftpWatch_t* ctx, void* data, DirItem_t* file, bool status, uint8_t ev);
+typedef void (*sync_cleanup_cb)(SftpWatch_t* ctx, void* data);
+
+namespace SyncDir {
+
+void    disconnect(SftpWatch_t* ctx);
+int32_t connect_or_reconnect(SftpWatch_t* ctx);
+void    sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que);
+int     sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
+int     sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
+void    sync_dir_thread(SftpWatch_t* ctx);
+
+}
+
+struct SyncQueue_s {
+	std::vector<DirItem_t*> l_new;
+	std::vector<DirItem_t*> r_new;
+	std::vector<DirItem_t>  r_del;
+	std::vector<DirItem_t>  l_del;
+};
+
+struct EvtFile_s {
+	bool       status = false;
+	uint8_t    ev;
+	DirItem_t* file;
+};
 
 struct DirItem_s {
 	/** Type of file as stated in #FileType_e */
@@ -146,10 +185,8 @@ struct SftpWatch_s {
 	struct sockaddr_in   sin;
 	std::vector<uint8_t> fingerprint;
 
-	Napi::Promise::Deferred  deferred;
-	std::thread              thread;
-	Napi::ThreadSafeFunction tsfn;
-	std::binary_semaphore    sem;
+	std::thread           thread;
+	std::binary_semaphore sem;
 
 	/** Snapshots */
 	DirSnapshot_t base_snap;
@@ -160,15 +197,21 @@ struct SftpWatch_s {
 	DirList_t remote_dirs;
 	DirList_t local_dirs;
 
+	sync_file_cb    cb_file;
+	sync_cleanup_cb cb_cleanup;
+
 	/** pointer to event data for js callback */
 	EvtFile_t* ev_file;
+
+	void* user_data;
 
 	bool     is_stopped = false; /**< set to true to stop sync loop */
 	uint32_t delay_ms   = 1000;  /**< delay between sync loop */
 
-	SftpWatch_s(Napi::Env env, uint32_t id, std::string host,
-		std::string username, std::string pubkey, std::string privkey,
-		std::string password, Directory_t remote_dir, Directory_t local_dir)
+	SftpWatch_s(uint32_t id, std::string host, std::string username,
+		std::string pubkey, std::string privkey, std::string password,
+		Directory_t remote_dir, Directory_t local_dir, sync_file_cb cb_file,
+		sync_cleanup_cb cb_cleanup, void* user_data)
 		: id(id)
 		, host(host)
 		, username(username)
@@ -177,8 +220,10 @@ struct SftpWatch_s {
 		, pubkey(pubkey)
 		, privkey(privkey)
 		, password(password)
-		, deferred(Napi::Promise::Deferred::New(env))
 		, sem(0) // semaphore is initially locked
+		, cb_file(cb_file)
+		, cb_cleanup(cb_cleanup)
+		, user_data(user_data)
 		, is_stopped(false)
 	{
 		this->remote_dirs[SNOD_SEP] = remote_dir;
