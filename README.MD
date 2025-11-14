@@ -89,7 +89,8 @@ Information about each file or directory synced, passed to the callback.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| **evt** | `'del' \| 'new' \| 'mod'` | Event type - whether the file is deleted, newly created, or modified. |
+| **evt** | `'down' \| 'up' \| 'delR'` \| 'delL'` | Event type |
+| **status** | `boolean` | True if file download/upload is finished |
 | **type** | `'f' \| 'd'` | Type of item - `'f'` for file, `'d'` for directory. |
 | **time** | `number` | UNIX timestamp of the last modification time. |
 | **size** | `number` | File size in bytes. |
@@ -187,18 +188,14 @@ process.on('SIGINT', async () => {
 
 I created this module out of curiosity, so several limitations were intentionally made to keep my sanity. Known limitations are as follows:
 
-- Only one-direction synchronization is supported, from remote to local.
+- Sub-direcory and all its contents are synchronized. But no depth limit has been implemented yet.
 
-- ~~Only single-level synchronization is implemented. Files inside subdirectories are not synchronized.~~ Sub-direcory and all its contents are synchronized. But no depth limit has been implemented yet.
-
-- Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file. Although the final result remains identical between remote and local, this may cause confusion since the 'modified' event keeps triggering until the remote writing process is finished.
+- Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file.
 
 - Renaming and moving a file/directory is handled as deletion -> creation. It would be a problem if the file size is large or the directory contains many files
 
 - Error handling is still limited, particularly regarding failed connections and failed directory or file reads.
 
 - Many errors are still hidden within the C++ layer and have not yet been exposed to JavaScript.
-
-- No local file check is performed before synchronization. If the local directory is not empty, untracked files may exist.
 
 - No prebuilt binary exists. So, you really need to install the [prequsites](#prerequisites) above.
