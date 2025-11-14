@@ -29,7 +29,7 @@ message(STATUS ${CMAKE_TOOLCHAIN_FILE})
 
 project(sftp-watch
 	LANGUAGES C CXX
-	VERSION 0.1.0)
+	VERSION "${PACKAGE_VERSION}")
 
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(INC_DIR "${SRC_DIR}/include")
@@ -45,11 +45,13 @@ endif ()
 add_library("${PROJECT_NAME}"
 	SHARED
 		${CMAKE_JS_SRC}
-		"${SRC_DIR}/sftp_helper.cc"
+		"${SRC_DIR}/sftp_local.cc"
+		"${SRC_DIR}/sftp_remote.cc"
 		"${SRC_DIR}/sftp_node.cc")
 
 set_target_properties("${PROJECT_NAME}"
 	PROPERTIES POSITION_INDEPENDENT_CODE 1
+	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 	PREFIX ""
 	SUFFIX ".node")
 
@@ -88,6 +90,13 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU
 			-O2
 		)
 
+	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+		target_compile_options("${PROJECT_NAME}"
+			PRIVATE
+				-Og
+				-ggdb)
+	endif ()
+
 	# prefer pthread if available
 	set(THREADS_PREFER_PTHREAD_FLAG ON)
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -97,6 +106,13 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 			#~ -EHsc # enable exception
 			-W4   # equivalent of -Wall
 			-O2)
+
+	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+		target_compile_options("${PROJECT_NAME}"
+			PRIVATE
+				-Og
+				-ggdb)
+	endif ()
 
 	set(THREADS_PREFER_PTHREAD_FLAG OFF)
 else ()

@@ -13,8 +13,11 @@
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
-#ifdef _POSIX_VERSION
+#if defined(_POSIX_VERSION)
 #	include <netinet/in.h>
+#	include <dirent.h>
+#elif defined(_WIN32)
+#	include <windows.h>
 #endif
 
 // default to 30000, as it is the value of max SFTP Packet
@@ -26,9 +29,50 @@
 #	define SFTP_FILENAME_MAX_LEN 512
 #endif
 
-#define SNOD_PATH_SEP        '/'
+#define SNOD_FILE_SIZE_SAME(f1, f2)  ((f1).attrs.filesize == (f2).attrs.filesize)
+#define SNOD_FILE_MTIME_SAME(f1, f2) (((f1).attrs.mtime == (f2).attrs.mtime))
+#define SNOD_FILE_IS_DIFF(f1, f2)                                              \
+	(!SNOD_FILE_SIZE_SAME(f1, f2) || !SNOD_FILE_MTIME_SAME(f1, f2))
 #define SNOD_FILE_PERM(attr) (attr.permissions & 0777)
-#define SNOD_SEP             (std::string("/"))
+
+#define SNOD_SEP      "/"
+#define SNOD_SEP_CHAR SNOD_SEP[0]
+
+#define SNOD_DELAY_US(us)                                                      \
+	std::this_thread::sleep_for(std::chrono::microseconds((us)))
+#define SNOD_DELAY_MS(ms)                                                      \
+	std::this_thread::sleep_for(std::chrono::milliseconds((ms)))
+
+#ifndef _WIN32
+#	define SNOD_SEC2MS(s) ((s) * 1000)
+#else
+// cast to double, avoiding overflow value
+#	define SNOD_SEC2MS(s) ((double)(s) * 1000.0)
+#endif
+
+#define SNOD_CHR2STR(s) (std::string(1, (s)))
+
+#ifndef SNOD_HOSTKEY_HASH
+#	define SNOD_HOSTKEY_HASH LIBSSH2_HOSTKEY_HASH_SHA1
+#endif
+
+#if ((SNOD_HOSTKEY_HASH) == (LIBSSH2_HOSTKEY_HASH_MD5))
+#	define SNOD_FINGERPRINT_LEN 16U
+#elif ((SNOD_HOSTKEY_HASH) == (LIBSSH2_HOSTKEY_HASH_SHA1))
+#	define SNOD_FINGERPRINT_LEN 20U
+#elif ((SNOD_HOSTKEY_HASH) == (LIBSSH2_HOSTKEY_HASH_SHA256))
+#	define SNOD_FINGERPRINT_LEN 32U
+#else
+#	error "SNOD_HOSTKEY_HASH is undefined"
+#endif
+
+#define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
+
+#ifndef NDEBUG
+#	define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#	define LOG_DBG(...) ((void)0)
+#endif
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -44,29 +88,38 @@ enum FileType_e {
 typedef struct EvtFile_s   EvtFile_t;
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
-typedef struct RemoteDir_s RemoteDir_t;
+typedef struct Directory_s Directory_t;
 
-typedef std::map<std::string, DirItem_t> PairFileDet_t;
-
-struct EvtFile_s {
-	bool       status = false;
-	uint8_t    ev;
-	DirItem_t* file;
-};
+typedef std::map<std::string, Directory_t> DirList_t;
+typedef std::map<std::string, DirItem_t>   PathFile_t;
+typedef std::map<std::string, PathFile_t>  DirSnapshot_t;
 
 struct DirItem_s {
-	uint8_t     type = 0;
+	/** Type of file as stated in #FileType_e */
+	uint8_t type = 0;
+
+	/** file name represented as path relative to root path */
 	std::string name;
 
+	/** File attributes. Also be used for local directory */
 	LIBSSH2_SFTP_ATTRIBUTES attrs;
 };
 
-struct RemoteDir_s {
-	bool        is_opened = false;
-	std::string rela;
-	std::string path;
+struct Directory_s {
+	bool        is_opened = false; /**< Directory open status */
+	uint8_t     depth     = 0;
+	std::string rela;              /**< path relative to root path */
+	std::string path;              /**< absoulte path */
 
-	LIBSSH2_SFTP_HANDLE* handle;
+	/** SFTP handle for remote directory. not used for local directory */
+	LIBSSH2_SFTP_HANDLE* handle = NULL;
+
+#if defined(_POSIX_VERSION)
+	/** Directory handle for local directory in POSIX. unused for remote */
+	DIR* loc_handle = NULL;
+#elif defined(_WIN32)
+	HANDLE loc_handle = NULL;
+#endif
 };
 
 struct SftpWatch_s {
@@ -87,34 +140,49 @@ struct SftpWatch_s {
 	uint8_t err_count     = 0;
 	uint8_t max_err_count = 3;
 
-	libssh2_socket_t   sock;
-	LIBSSH2_SESSION*   session;
-	LIBSSH2_SFTP*      sftp_session;
-	struct sockaddr_in sin;
-	const char*        fingerprint;
+	libssh2_socket_t     sock;
+	LIBSSH2_SESSION*     session;
+	LIBSSH2_SFTP*        sftp_session;
+	struct sockaddr_in   sin;
+	std::vector<uint8_t> fingerprint;
 
 	Napi::Promise::Deferred  deferred;
 	std::thread              thread;
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
 
-	// collection of directory that should be iterated
-	std::map<std::string, RemoteDir_t>   dirs;
-	std::map<std::string, PairFileDet_t> last_files;
-	std::vector<std::string>             undirs;
+	/** Snapshots */
+	DirSnapshot_t base_snap;
+	DirSnapshot_t remote_snap;
+	DirSnapshot_t local_snap;
 
-	// pointer to event data for js callback
+	/** collection of directory that should be iterated */
+	DirList_t remote_dirs;
+	DirList_t local_dirs;
+
+	/** pointer to event data for js callback */
 	EvtFile_t* ev_file;
 
-	bool     is_stopped;
-	uint32_t delay_ms = 1000;
+	bool     is_stopped = false; /**< set to true to stop sync loop */
+	uint32_t delay_ms   = 1000;  /**< delay between sync loop */
 
-	SftpWatch_s(Napi::Env env, uint32_t qid)
-		: id(qid)
+	SftpWatch_s(Napi::Env env, uint32_t id, std::string host,
+		std::string username, std::string pubkey, std::string privkey,
+		std::string password, Directory_t remote_dir, Directory_t local_dir)
+		: id(id)
+		, host(host)
+		, username(username)
+		, remote_path(remote_dir.path)
+		, local_path(local_dir.path)
+		, pubkey(pubkey)
+		, privkey(privkey)
+		, password(password)
 		, deferred(Napi::Promise::Deferred::New(env))
 		, sem(0) // semaphore is initially locked
+		, is_stopped(false)
 	{
-		// left empty intentionally
+		this->remote_dirs[SNOD_SEP] = remote_dir;
+		this->local_dirs[SNOD_SEP]  = local_dir;
 	}
 };
 

@@ -30,9 +30,10 @@ function formatBytes(size, useBinary = true) {
 
 function getEvtColor(evt) {
 	switch(evt) {
-	case 'del': return '\x1b[1m\x1b[31m';
-	case 'new': return '\x1b[32m';
-	case 'mod': return '\x1b[1m\x1b[32m';
+	case 'delR': return '\x1b[1m\x1b[31m';
+	case 'delL': return '\x1b[1m\x1b[91m';
+	case 'up': return '\x1b[95m';
+	case 'down': return '\x1b[1m\x1b[32m';
 	default   : return '\x1b[0m';
 	}
 }
@@ -40,26 +41,38 @@ function getEvtColor(evt) {
 try {
 	const connectId = SftpWatch.connect(config);
 
-	// should be a number and > 0
+	// should yield a number > 0
 	if (!connectId) throw 'Failed to connect to SFTP Server';
 
-	process.on('SIGINT', async () => {
-			await SftpWatch.stop(connectId);
-			process.exit(0);
-		});
-
-	SftpWatch.sync(connectId, (file) => {
+	// save returned promise for stopping later
+	const sync = SftpWatch.sync(connectId, (file) => {
 			const dt  = new Date(file.time);
 			const now = new Date();
 			console.log(
 				`${now.toLocaleString('Lt-lt')} => `
-				+ `${getEvtColor(file.evt)}[${file.evt}]\x1b[0m `
+				+ `${file.status ? 'FINISHED' : 'STARTING'} `
+				+ `${getEvtColor(file.evt)}[${file.evt.padEnd(4)}]\x1b[0m `
 				+ `\x1b[3m<type ${file.type}>\x1b[0m `
 				+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
+				+ `\x1b[34m${file.time}\x1b[0m `
 				+ `${file.perm.toString(8)} `
 				+ `${formatBytes(file.size)} `
 				+ `\x1b[1m\x1b[${file.type == 'f' ? 33 : 36}m${file.name}\x1b[0m `
 			);
+		});
+
+	process.on('SIGINT', async () => {
+			console.log("\nSTOPPING ID", connectId);
+
+			// request stop for connectId
+			SftpWatch.stop(connectId);
+
+			// wait until sync process is stopped
+			const stoppedId = await sync.then(id => id);
+
+			console.log("\nSTOPPED", stoppedId);
+
+			process.exit(0);
 		});
 } catch (error) {
 	console.error(error);

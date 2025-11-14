@@ -1,4 +1,4 @@
-export type FileEvent = 'del' | 'new' | 'mod';
+export type FileEvent = 'down' | 'up' | 'delR'| 'delL';
 export type FileType = 'f' | 'd';
 
 export interface Config {
@@ -18,6 +18,7 @@ export interface Config {
 
 export interface FileInfo {
   evt: FileEvent;
+  status: boolean;
   type: FileType;
   time: number;
   size: number;
