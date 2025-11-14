@@ -568,12 +568,7 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	libssh2_sftp_close(handle);
 	fclose(fd_local);
 
-	// set remote stat
-	while (FN_RC_EAGAIN(rc,
-		libssh2_sftp_stat_ex(ctx->sftp_session, remote_file.c_str(),
-			remote_file.size(), LIBSSH2_SFTP_SETSTAT, &file->attrs))) {
-		if (waitsocket(ctx->sock, ctx->session) < 0) break;
-	}
+	SftpRemote::set_filestat(ctx, remote_file, &file->attrs);
 
 	return rc;
 }
@@ -590,11 +585,11 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 	 * */
 	LIBSSH2_SFTP_ATTRIBUTES attrs;
 	bool                    is_stable = false;
-	SftpRemote::filestat(ctx, remote_file, &attrs);
+	SftpRemote::get_filestat(ctx, remote_file, &attrs);
 	while (!is_stable) {
 		SNOD_DELAY_MS(SNOD_WAIT_STABLE);
 
-		SftpRemote::filestat(ctx, remote_file, &attrs);
+		SftpRemote::get_filestat(ctx, remote_file, &attrs);
 		is_stable = file->attrs.filesize == attrs.filesize;
 
 		memcpy(&file->attrs, &attrs, sizeof(attrs));
@@ -693,12 +688,7 @@ int32_t SftpRemote::mkdir(SftpWatch_t* ctx, DirItem_t* dir)
 	while (FN_RC_EAGAIN(
 		rc, libssh2_sftp_mkdir(ctx->sftp_session, remote_dir.c_str(), mode)));
 
-	// set remote stat
-	while (FN_RC_EAGAIN(rc,
-		libssh2_sftp_stat_ex(ctx->sftp_session, remote_dir.c_str(),
-			remote_dir.size(), LIBSSH2_SFTP_SETSTAT, &dir->attrs))) {
-		if (waitsocket(ctx->sock, ctx->session) < 0) break;
-	}
+	SftpRemote::set_filestat(ctx, remote_dir, &dir->attrs);
 
 	return rc;
 }
@@ -737,7 +727,24 @@ int32_t SftpRemote::rmdir(SftpWatch_t* ctx, DirItem_t* dir)
 	return rc;
 }
 
-int32_t SftpRemote::filestat(
+int32_t SftpRemote::set_filestat(
+	SftpWatch_t* ctx, std::string& path, LIBSSH2_SFTP_ATTRIBUTES* attrs)
+{
+	int32_t rc = 0;
+
+	// create copy to preserve original in case failure happens
+	LIBSSH2_SFTP_ATTRIBUTES remote_attrs = *attrs;
+
+	while (FN_RC_EAGAIN(rc,
+		libssh2_sftp_stat_ex(ctx->sftp_session, path.c_str(), path.size(),
+			LIBSSH2_SFTP_SETSTAT, &remote_attrs))) {
+		if (waitsocket(ctx->sock, ctx->session) < 0) break;
+	}
+
+	return rc;
+}
+
+int32_t SftpRemote::get_filestat(
 	SftpWatch_t* ctx, std::string& path, LIBSSH2_SFTP_ATTRIBUTES* attrs)
 {
 	int32_t rc = 0;
