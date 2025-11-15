@@ -1,7 +1,7 @@
 #ifndef _SFTP_REMOTE_HPP
 #define _SFTP_REMOTE_HPP
 
-#include "sftp_node.hpp"
+#include "sftp_watch.hpp"
 #include <cstdint>
 
 namespace SftpRemote {

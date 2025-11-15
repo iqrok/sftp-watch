@@ -120,15 +120,15 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 {
 	int32_t rc = LIBSSH2_ERROR_EAGAIN;
 
-	do {
-		if (ctx->use_keyboard) {
-			rc = libssh2_userauth_keyboard_interactive_ex(ctx->session,
-				ctx->username.c_str(), ctx->username.size(), &kbd_callback);
-		} else {
-			rc = libssh2_userauth_password(
-				ctx->session, ctx->username.c_str(), ctx->password.c_str());
-		}
-	} while (rc == LIBSSH2_ERROR_EAGAIN);
+	if (ctx->use_keyboard) {
+		while (FN_RC_EAGAIN(rc,
+			libssh2_userauth_keyboard_interactive_ex(ctx->session,
+				ctx->username.c_str(), ctx->username.size(), &kbd_callback)));
+	} else {
+		while (FN_RC_EAGAIN(rc,
+			libssh2_userauth_password(
+				ctx->session, ctx->username.c_str(), ctx->password.c_str())));
+	}
 
 	if (rc) {
 		LOG_ERR("Authentication by password failed %d [%s].\n", rc,
@@ -279,10 +279,10 @@ int32_t SftpRemote::auth(SftpWatch_t* ctx)
 	 * */
 
 	if (!ctx->pubkey.empty() && !ctx->privkey.empty()) {
-		while ((rc = libssh2_userauth_publickey_fromfile(ctx->session,
-					ctx->username.c_str(), ctx->pubkey.c_str(),
-					ctx->privkey.c_str(), ctx->password.c_str()))
-			== LIBSSH2_ERROR_EAGAIN);
+		while (FN_RC_EAGAIN(rc,
+			libssh2_userauth_publickey_fromfile(ctx->session,
+				ctx->username.c_str(), ctx->pubkey.c_str(),
+				ctx->privkey.c_str(), ctx->password.c_str())));
 
 		if (rc) {
 			char*   errmsg;
@@ -370,9 +370,9 @@ int32_t SftpRemote::read_dir(Directory_t& dir, DirItem_t* file)
 	int32_t rc = 0;
 
 	char filename[SFTP_FILENAME_MAX_LEN];
-	while ((rc = libssh2_sftp_readdir(
-				dir.handle, filename, sizeof(filename), &file->attrs))
-		== LIBSSH2_ERROR_EAGAIN);
+	while (FN_RC_EAGAIN(rc,
+		libssh2_sftp_readdir(
+			dir.handle, filename, sizeof(filename), &file->attrs)));
 
 	// there's a record
 	if (rc > 0) {

@@ -47,8 +47,8 @@ add_library("${PROJECT_NAME}"
 		${CMAKE_JS_SRC}
 		"${SRC_DIR}/sftp_local.cc"
 		"${SRC_DIR}/sftp_remote.cc"
-		"${SRC_DIR}/sftp_node_api.cc"
-		"${SRC_DIR}/sftp_node.cc")
+		"${SRC_DIR}/sftp_watch.cc"
+		"${SRC_DIR}/sftp_node_api.cc")
 
 set_target_properties("${PROJECT_NAME}"
 	PROPERTIES POSITION_INDEPENDENT_CODE 1

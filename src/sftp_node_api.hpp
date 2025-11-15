@@ -3,7 +3,7 @@
 
 #include <napi.h>
 
-#include "sftp_node.hpp"
+#include "sftp_watch.hpp"
 
 typedef struct EvtFile_s {
 	bool       status;

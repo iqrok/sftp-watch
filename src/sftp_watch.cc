@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "sftp_local.hpp"
-#include "sftp_node.hpp"
+#include "sftp_watch.hpp"
 #include "sftp_remote.hpp"
 
 #define SNOD_PRV_WAIT_MS 50
