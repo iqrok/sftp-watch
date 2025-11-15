@@ -94,8 +94,8 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 		target_compile_options("${PROJECT_NAME}"
 			PRIVATE
-				-Og
-				-ggdb)
+				-O0
+				-g)
 	endif ()
 
 	# prefer pthread if available
@@ -159,8 +159,8 @@ if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
 	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{LIBSSH2_DIR}")
 else ()
-	find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2)
-	find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h)
+	find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2 REQUIRED)
+	find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
 
 	target_link_libraries("${PROJECT_NAME}"
 		PRIVATE "${LIBSSH2_LIBRARY}")
