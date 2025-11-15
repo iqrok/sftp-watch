@@ -1,6 +1,7 @@
 #ifndef _SFTP_NODE_HPP
 #define _SFTP_NODE_HPP
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <semaphore>
@@ -8,9 +9,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include <napi.h>
-
-#include "libssh2_setup.h"
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
@@ -19,6 +17,13 @@
 #	include <dirent.h>
 #elif defined(_WIN32)
 #	include <windows.h>
+#endif
+
+#ifndef NDEBUG
+/** Alias for SIGTRAP in debug mode. */
+#	define __breakpoint() asm volatile("int $3")
+#else
+#	define __breakpoint()
 #endif
 
 // default to 30000, as it is the value of max SFTP Packet
@@ -86,16 +91,15 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
-enum EventFile_e {
+typedef enum EventFile_e {
 	EVT_FILE_LDEL = 0x00,
 	EVT_FILE_UP   = 0x01,
 	EVT_FILE_RDEL = 0x02,
 	EVT_FILE_DOWN = 0x03,
-};
+} EventFile_t;
 
-typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
+typedef void* UserData_t;
 
-typedef struct EvtFile_s   EvtFile_t;
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
 typedef struct Directory_s Directory_t;
@@ -105,32 +109,17 @@ typedef std::map<std::string, Directory_t> DirList_t;
 typedef std::map<std::string, DirItem_t>   PathFile_t;
 typedef std::map<std::string, PathFile_t>  DirSnapshot_t;
 
-typedef void (*sync_file_cb)(
-	SftpWatch_t* ctx, void* data, DirItem_t* file, bool status, uint8_t ev);
-typedef void (*sync_cleanup_cb)(SftpWatch_t* ctx, void* data);
+typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 
-namespace SyncDir {
-
-void    disconnect(SftpWatch_t* ctx);
-int32_t connect_or_reconnect(SftpWatch_t* ctx);
-void    sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que);
-int     sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
-int     sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins);
-void    sync_dir_thread(SftpWatch_t* ctx);
-
-}
+typedef void (*sync_file_cb)(SftpWatch_t* ctx, UserData_t data, DirItem_t* file,
+	bool status, EventFile_t ev);
+typedef void (*sync_cleanup_cb)(SftpWatch_t* ctx, UserData_t data);
 
 struct SyncQueue_s {
 	std::vector<DirItem_t*> l_new;
 	std::vector<DirItem_t*> r_new;
 	std::vector<DirItem_t>  r_del;
 	std::vector<DirItem_t>  l_del;
-};
-
-struct EvtFile_s {
-	bool       status = false;
-	uint8_t    ev;
-	DirItem_t* file;
 };
 
 struct DirItem_s {
@@ -157,12 +146,12 @@ struct Directory_s {
 	/** Directory handle for local directory in POSIX. unused for remote */
 	DIR* loc_handle = NULL;
 #elif defined(_WIN32)
+	/** Directory handle for local directory in WIN32. unused for remote */
 	HANDLE loc_handle = NULL;
 #endif
 };
 
 struct SftpWatch_s {
-	uint32_t    id;
 	int16_t     timeout_sec = 60U;
 	uint16_t    port        = 22U;
 	std::string host;
@@ -175,18 +164,19 @@ struct SftpWatch_s {
 	std::string password;
 	bool        use_keyboard = true;
 
-	bool    is_connected  = false;
-	uint8_t err_count     = 0;
-	uint8_t max_err_count = 3;
+	std::atomic<bool>    is_connected  = false;
+	std::atomic<uint8_t> err_count     = 0;
+	uint8_t              max_err_count = 3;
+
+	std::atomic<bool> is_stopped = false; /**< set to true to stop sync loop */
+	uint32_t          delay_ms   = 1000;  /**< delay between sync loop */
 
 	libssh2_socket_t     sock;
 	LIBSSH2_SESSION*     session;
 	LIBSSH2_SFTP*        sftp_session;
-	struct sockaddr_in   sin;
 	std::vector<uint8_t> fingerprint;
 
-	std::thread           thread;
-	std::binary_semaphore sem;
+	std::thread thread;
 
 	/** Snapshots */
 	DirSnapshot_t base_snap;
@@ -200,35 +190,35 @@ struct SftpWatch_s {
 	sync_file_cb    cb_file;
 	sync_cleanup_cb cb_cleanup;
 
-	/** pointer to event data for js callback */
-	EvtFile_t* ev_file;
+	UserData_t user_data = nullptr;
 
-	void* user_data;
-
-	bool     is_stopped = false; /**< set to true to stop sync loop */
-	uint32_t delay_ms   = 1000;  /**< delay between sync loop */
-
-	SftpWatch_s(uint32_t id, std::string host, std::string username,
-		std::string pubkey, std::string privkey, std::string password,
-		Directory_t remote_dir, Directory_t local_dir, sync_file_cb cb_file,
-		sync_cleanup_cb cb_cleanup, void* user_data)
-		: id(id)
-		, host(host)
+	SftpWatch_s(std::string host, std::string username, std::string pubkey,
+		std::string privkey, std::string password, Directory_t remote_dir,
+		Directory_t local_dir, sync_file_cb cb_file, sync_cleanup_cb cb_cleanup)
+		: host(host)
 		, username(username)
 		, remote_path(remote_dir.path)
 		, local_path(local_dir.path)
 		, pubkey(pubkey)
 		, privkey(privkey)
 		, password(password)
-		, sem(0) // semaphore is initially locked
 		, cb_file(cb_file)
 		, cb_cleanup(cb_cleanup)
-		, user_data(user_data)
-		, is_stopped(false)
 	{
 		this->remote_dirs[SNOD_SEP] = remote_dir;
 		this->local_dirs[SNOD_SEP]  = local_dir;
 	}
 };
+
+namespace SftpWatch {
+
+void    disconnect(SftpWatch_t* ctx);
+int32_t connect_or_reconnect(SftpWatch_t* ctx);
+int32_t set_user_data(SftpWatch_t* ctx, UserData_t data);
+//~ void    sync_thread(SftpWatch_t* ctx);
+void    start(SftpWatch_t* ctx);
+void    clear(SftpWatch_t* ctx);
+
+}
 
 #endif

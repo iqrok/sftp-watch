@@ -8,7 +8,6 @@
 
 #include "sftp_local.hpp"
 #include "sftp_node.hpp"
-#include "sftp_node_api.hpp"
 #include "sftp_remote.hpp"
 
 #define SNOD_PRV_WAIT_MS 50
@@ -18,34 +17,16 @@
 			SNOD_DELAY_MS((i));                                                \
 	} while (0)
 
-namespace { // start of unnamed namespace for static function
+/* ******************** Start of Static Functions *************************** */
+namespace {
 
-/* ************************* Forward Declare ******************************* */
-
-/*
- * to store watcher contexts.
- * - `ids` is to hold the last set id, always be incremented to avoid same id
- * - `watchers` is to hold all individual contexts itself as a map
- *
- * Keep both as static as the needs must be in this file only. Tracking globals
- * accross files is confusing.
- *
- * NOTE: using unordered_map as it's should be small enough and access is
- *       generally faster.
- * */
-//~ static uint32_t                                   ids = 0;
-//~ static std::unordered_map<uint32_t, SftpWatch_t*> watchers;
-
-} // end of unnamed namespace for static function
-
-/* ************************* Implementations ******************************* */
 static bool is_file_same(PathFile_t& list, std::string& key, DirItem_t& item)
 {
 	if (!list.contains(key)) return false;
 	return !SNOD_FILE_IS_DIFF(list.at(key), item);
 }
 
-std::string prv_get_key(std::string root, std::string full)
+static std::string prv_get_key(std::string root, std::string full)
 {
 	size_t pos = full.find(root);
 
@@ -57,22 +38,7 @@ std::string prv_get_key(std::string root, std::string full)
 	return full;
 }
 
-int32_t SyncDir::connect_or_reconnect(SftpWatch_t* ctx)
-{
-	if (ctx->is_connected) SftpRemote::disconnect(ctx);
-
-	if (SftpRemote::connect(ctx)) return -1;
-	if (SftpRemote::auth(ctx)) return -2;
-
-	return 0;
-}
-
-void SyncDir::disconnect(SftpWatch_t* ctx)
-{
-	SftpRemote::disconnect(ctx);
-}
-
-int SyncDir::sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
+static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->local_path, dir.path);
 	PathFile_t& list     = ctx->local_snap[snap_key];
@@ -141,7 +107,7 @@ int SyncDir::sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	return 0;
 }
 
-int SyncDir::sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
+static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 {
 	std::string snap_key = prv_get_key(ctx->remote_path, dir.path);
 	// we're gonna need pair for the directory. So, create it anyway use []
@@ -215,7 +181,7 @@ int SyncDir::sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	return 0;
 }
 
-void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
+static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 {
 	/*
 	 * Compare snapshots to perform 3-way merge. Base snapshot is used as anchor
@@ -348,9 +314,8 @@ void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 	}
 }
 
-void SyncDir::sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
+static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 {
-
 	for (auto it = que.l_del.begin(); it != que.l_del.end() && !ctx->is_stopped;
 		++it) {
 
@@ -432,7 +397,7 @@ void SyncDir::sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 	}
 }
 
-void SyncDir::sync_dir_thread(SftpWatch_t* ctx)
+void sync_thread(SftpWatch_t* ctx)
 {
 	while (!ctx->is_stopped) {
 		int32_t     rc = 0;
@@ -456,7 +421,7 @@ void SyncDir::sync_dir_thread(SftpWatch_t* ctx)
 
 		if (ctx->err_count >= ctx->max_err_count && !ctx->is_stopped) {
 			int16_t reconnect_delay = ctx->delay_ms;
-			while (!ctx->is_stopped && connect_or_reconnect(ctx)) {
+			while (!ctx->is_stopped && SftpWatch::connect_or_reconnect(ctx)) {
 				if (reconnect_delay < ctx->timeout_sec) {
 					reconnect_delay += ctx->delay_ms;
 				}
@@ -469,6 +434,51 @@ void SyncDir::sync_dir_thread(SftpWatch_t* ctx)
 	}
 
 	// Cleanup
-	//~ ctx->tsfn.Release();
 	ctx->cb_cleanup(ctx, ctx->user_data);
+}
+
+} /* ******************** End of Static Functions *************************** */
+
+/* ************************ API Implementations ***************************** */
+int32_t SftpWatch::set_user_data(SftpWatch_t* ctx, UserData_t data)
+{
+	if (!ctx || !data) return -1;
+
+	ctx->user_data = data;
+
+	return 0;
+}
+
+int32_t SftpWatch::connect_or_reconnect(SftpWatch_t* ctx)
+{
+	if (ctx->is_connected) SftpRemote::disconnect(ctx);
+
+	if (SftpRemote::connect(ctx)) return -1;
+
+	ctx->is_connected = true;
+
+	if (SftpRemote::auth(ctx)) return -2;
+
+	return 0;
+}
+
+void SftpWatch::start(SftpWatch_t* ctx)
+{
+	ctx->thread = std::thread(sync_thread, ctx);
+}
+
+void SftpWatch::disconnect(SftpWatch_t* ctx)
+{
+	if (ctx->is_connected) SftpRemote::disconnect(ctx);
+	ctx->is_connected = false;
+}
+
+void SftpWatch::clear(SftpWatch_t* ctx)
+{
+	ctx->base_snap.clear();
+	ctx->local_snap.clear();
+	ctx->remote_snap.clear();
+	ctx->remote_dirs.clear();
+	ctx->local_dirs.clear();
+	ctx->err_count = 0;
 }

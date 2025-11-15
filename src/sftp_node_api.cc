@@ -4,25 +4,16 @@ static void sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
 {
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
-	SyncDir::disconnect(ctx);
-
-	ctx->thread.join();
-	node_ctx->deferred.Resolve(Napi::Number::New(env, ctx->id));
-
-	//~ watchers.erase(ctx->id);
-
-	//~ if (watchers.empty()) SftpRemote::shutdown();
-
-	delete ctx;
-	node_ctx->ctx = nullptr;
+	SftpWatch::disconnect(ctx);
+	node_ctx->cleanup(env);
 }
 
 static void sync_dir_tsfn_cb(
-	Napi::Env env, Napi::Function js_cb, SftpWatch_t* ctx)
+	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
 {
 	Napi::Object obj = Napi::Object::New(env);
 
-	EvtFile_t* ev = ctx->ev_file;
+	EvtFile_t* ev = node_ctx->get_file_event();
 
 	switch (ev->ev) {
 
@@ -54,35 +45,34 @@ static void sync_dir_tsfn_cb(
 	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(ev->file->attrs)));
 
 	// don't forget to delete the data, since we used dynamic allocation
-	delete ev;
+	node_ctx->delete_file_event();
 
 	js_cb.Call({ obj });
 
 	// release the lock
-	ctx->sem.release();
+	node_ctx->sem.release();
 }
 
-static void sync_dir_js_call(
-	SftpWatch_t* ctx, void* data, DirItem_t* file, bool status, uint8_t ev)
+static void sync_dir_js_call(SftpWatch_t* ctx, UserData_t data, DirItem_t* file,
+	bool status, EventFile_t ev)
 {
+	(void)ctx;
+
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
 	// need to use heap, avoiding data lost when race condition occurs
-	ctx->ev_file         = new EvtFile_t;
-	ctx->ev_file->ev     = ev;
-	ctx->ev_file->status = status;
-	ctx->ev_file->file   = file;
+	node_ctx->set_file_event(ev, status, file);
 
 	// BlockingCall() should never fail, since max queue size is 0
-	if (node_ctx->tsfn.BlockingCall(ctx, sync_dir_tsfn_cb) != napi_ok) {
+	if (node_ctx->tsfn.BlockingCall(node_ctx, sync_dir_tsfn_cb) != napi_ok) {
 		Napi::Error::Fatal("new file err", "BlockingCall() failed");
 	}
 
 	// wait until the BlockingCall is finished
-	ctx->sem.acquire();
+	node_ctx->sem.acquire();
 }
 
-static void thread_cleanup(SftpWatch_t* ctx, void* data)
+static void thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 {
 	(void)ctx;
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
@@ -91,6 +81,7 @@ static void thread_cleanup(SftpWatch_t* ctx, void* data)
 
 SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	: Napi::ObjectWrap<SftpNode>(info)
+	, sem(0) // semaphore is initially locked
 	, deferred(Napi::Promise::Deferred::New(info.Env()))
 {
 	Napi::Env env = info.Env();
@@ -191,9 +182,10 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	}
 
 	// ------------------------ Init context -----------------------------------
-	SftpWatch_t* ctx = new SftpWatch_t(0, host, username, pubkey, privkey,
-		password, remote_dir, local_dir, sync_dir_js_call, thread_cleanup,
-		(void*)this);
+	SftpWatch_t* ctx = new SftpWatch_t(host, username, pubkey, privkey,
+		password, remote_dir, local_dir, sync_dir_js_call, thread_cleanup);
+
+	SftpWatch::set_user_data(ctx, static_cast<UserData_t>(this));
 
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
@@ -220,16 +212,61 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		ctx->use_keyboard = arg.Get("useKeyboard").As<Napi::Boolean>().Value();
 	}
 
-	//~ watchers[ctx->id] = ctx;
 	this->ctx = ctx;
+}
+
+EvtFile_t* SftpNode::set_file_event(
+	EventFile_t& ev, bool& status, DirItem_t* file)
+{
+	this->ev_file         = new EvtFile_t;
+	this->ev_file->ev     = ev;
+	this->ev_file->status = status;
+	this->ev_file->file   = file;
+
+	return this->ev_file;
+}
+
+EvtFile_t* SftpNode::get_file_event()
+{
+	return this->ev_file;
+}
+
+void SftpNode::delete_file_event()
+{
+	delete this->ev_file;
+}
+
+SftpWatch_t* SftpNode::get_watch_ctx()
+{
+	if (this->ctx) return this->ctx;
+	return nullptr;
+}
+
+void SftpNode::cleanup(Napi::Env env)
+{
+	this->ctx->thread.join();
+
+	this->deferred.Resolve(Napi::String::New(env, this->ctx->host));
+	this->is_resolved = true;
+
+	// FIXME: Restart after cleaning up
+	SftpWatch::clear(this->ctx);
+
+	//~ delete this->ctx;
+	//~ this->ctx = nullptr;
 }
 
 Napi::Value SftpNode::js_connect(const Napi::CallbackInfo& info)
 {
-	Napi::Env env = info.Env();
+	Napi::Env env         = info.Env();
+	uint32_t  max_attempt = 0;
 
-	for (uint8_t i = 0; i < 5; i++) {
-		if (!SyncDir::connect_or_reconnect(this->ctx)) {
+	if (info[0].IsNumber()) {
+		max_attempt = info[0].As<Napi::Number>().Uint32Value();
+	}
+
+	for (uint32_t i = 0; i < max_attempt || max_attempt == 0; i++) {
+		if (!SftpWatch::connect_or_reconnect(this->ctx)) {
 			return Napi::Boolean::New(env, true);
 		}
 	}
@@ -253,10 +290,13 @@ Napi::Value SftpNode::js_sync_dir(const Napi::CallbackInfo& info)
 		return Napi::Boolean::New(env, false);
 	}
 
-	//~ const uint32_t id    = info[0].As<Napi::Number>().Uint32Value();
 	Napi::Function js_cb = info[0].As<Napi::Function>();
 
-	//~ SftpWatch_t* ctx = watchers.at(id);
+	if (this->is_resolved) {
+		this->deferred    = Napi::Promise::Deferred::New(env);
+		this->is_resolved = false;
+	}
+
 	SftpWatch_t* ctx = this->ctx;
 
 	ctx->is_stopped = false;
@@ -270,7 +310,7 @@ Napi::Value SftpNode::js_sync_dir(const Napi::CallbackInfo& info)
 			 this                // Finalizer data
 		 );
 
-	ctx->thread = std::thread(SyncDir::sync_dir_thread, ctx);
+	SftpWatch::start(ctx);
 
 	return this->deferred.Promise();
 }
@@ -279,11 +319,6 @@ Napi::Value SftpNode::js_sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
-	//~ const uint32_t id = info[0].As<Napi::Number>().Uint32Value();
-
-	//~ if (!watchers.contains(id)) return Napi::Boolean::New(env, true);
-
-	//~ SftpWatch_t* ctx = watchers.at(id);
 	SftpWatch_t* ctx = this->ctx;
 	ctx->is_stopped  = true;
 
@@ -292,12 +327,14 @@ Napi::Value SftpNode::js_sync_stop(const Napi::CallbackInfo& info)
 
 Napi::Function SftpNode::init(Napi::Env env)
 {
-	return SftpNode::DefineClass(env, "SftpNode",
-		{
-			SftpNode::InstanceMethod("connect", &SftpNode::js_connect),
-			SftpNode::InstanceMethod("sync", &SftpNode::js_sync_dir),
-			SftpNode::InstanceMethod("stop", &SftpNode::js_sync_stop),
-		});
+	std::initializer_list<Napi::ClassPropertyDescriptor<SftpNode>> properties
+		= {
+			  SftpNode::InstanceMethod("connect", &SftpNode::js_connect),
+			  SftpNode::InstanceMethod("sync", &SftpNode::js_sync_dir),
+			  SftpNode::InstanceMethod("stop", &SftpNode::js_sync_stop),
+		  };
+
+	return SftpNode::DefineClass(env, "SftpNode", properties);
 }
 
 Napi::Object init_napi(Napi::Env env, Napi::Object exports)
@@ -308,17 +345,3 @@ Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 }
 
 NODE_API_MODULE(NODE_GYP_MODULE_NAME, init_napi);
-
-//~ Napi::Object init_napi(Napi::Env env, Napi::Object exports)
-//~ {
-//~ exports.Set(Napi::String::New(env, "connect"),
-//~ Napi::Function::New(env, js_connect));
-//~ exports.Set(
-//~ Napi::String::New(env, "sync"), Napi::Function::New(env, js_sync_dir));
-//~ exports.Set(
-//~ Napi::String::New(env, "stop"), Napi::Function::New(env, js_sync_stop));
-
-//~ return exports;
-//~ }
-
-//~ NODE_API_MODULE(NODE_GYP_MODULE_NAME, init_napi);
