@@ -153,7 +153,7 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
 				LOG_ERR("Unable to open file '%s' with SFTP: %ld\n",
 					remote_path, libssh2_sftp_last_error(ctx->sftp_session));
-				return NULL;
+				break;
 			} else {
 				// non-blocking open, now we wait until socket is ready
 				waitsocket(ctx->sock, ctx->session);
@@ -243,9 +243,10 @@ int32_t SftpRemote::connect(SftpWatch_t* ctx)
 	/* Since we have set non-blocking, tell libssh2 we are non-blocking */
 	libssh2_session_set_blocking(ctx->session, 0);
 	libssh2_session_set_timeout(ctx->session, ctx->timeout_sec);
+	libssh2_session_flag(ctx->session, LIBSSH2_FLAG_COMPRESS, 1);
 
-	while ((rc = libssh2_session_handshake(ctx->session, ctx->sock))
-		== LIBSSH2_ERROR_EAGAIN);
+	while (
+		FN_RC_EAGAIN(rc, libssh2_session_handshake(ctx->session, ctx->sock)));
 
 	if (rc) {
 		LOG_ERR("Failure establishing SSH session: %d\n", rc);
@@ -426,11 +427,21 @@ uint8_t SftpRemote::get_filetype(DirItem_t* file)
 
 void SftpRemote::disconnect(SftpWatch_t* ctx)
 {
-	libssh2_sftp_shutdown(ctx->sftp_session);
+	int32_t rc = 0;
+
+	while (FN_RC_EAGAIN(rc, libssh2_sftp_shutdown(ctx->sftp_session))) {
+		waitsocket(ctx->sock, ctx->session);
+	}
 
 	if (ctx->session) {
-		libssh2_session_disconnect(ctx->session, "Normal Shutdown");
-		libssh2_session_free(ctx->session);
+		while (FN_RC_EAGAIN(
+			rc, libssh2_session_disconnect(ctx->session, "Normal Shutdown"))) {
+			waitsocket(ctx->sock, ctx->session);
+		}
+
+		while (FN_RC_EAGAIN(rc, libssh2_session_free(ctx->session))) {
+			waitsocket(ctx->sock, ctx->session);
+		}
 	}
 
 	if (ctx->sock != LIBSSH2_INVALID_SOCKET) {
@@ -513,15 +524,15 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 		memcpy(&file->attrs, &attrs, sizeof(attrs));
 	}
 
-	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str(),
-		SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
-
 	FILE* fd_local = fopen(local_file.c_str(), "rb");
 
 	if (!fd_local) {
 		LOG_ERR("Error opening file!\n");
 		return -2;
 	}
+
+	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str(),
+		SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
 
 	// connection loop, check if socket is ready
 	int32_t nwritten = 0;
@@ -565,7 +576,9 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	} while (nwritten > 0);
 
 	// close both sftp and file handle
-	libssh2_sftp_close(handle);
+	while (FN_RC_EAGAIN(rc, libssh2_sftp_close(handle))) {
+		waitsocket(ctx->sock, ctx->session);
+	}
 	fclose(fd_local);
 
 	SftpRemote::set_filestat(ctx, remote_file, &file->attrs);
@@ -595,9 +608,6 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		memcpy(&file->attrs, &attrs, sizeof(attrs));
 	}
 
-	LIBSSH2_SFTP_HANDLE* handle
-		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_READ, 0);
-
 	FILE* fd_local = fopen(local_file.c_str(), "wb");
 
 	if (!fd_local) {
@@ -605,8 +615,11 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		return -2;
 	}
 
+	LIBSSH2_SFTP_HANDLE* handle
+		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_READ, 0);
+
 	// connection loop, check if socket is ready
-	while (1) {
+	while (handle) {
 		int32_t nread = 0;
 
 		// remote read loop, loop until failed or no remaining bytes
@@ -638,7 +651,10 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 	}
 
 	// close both sftp and file handle
-	libssh2_sftp_close(handle);
+	while (FN_RC_EAGAIN(rc, libssh2_sftp_close(handle))) {
+		waitsocket(ctx->sock, ctx->session);
+	}
+
 	fclose(fd_local);
 
 	// return now if error
