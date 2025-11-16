@@ -6,11 +6,14 @@ const config = require('./config.js');
 config.localPath = __dirname + '/test';
 
 const fs = require('fs');
-if (fs.existsSync(config.localPath)) {
-	fs.rmSync(config.localPath, { recursive: true, });
+if (process.argv.length > 2) {
+	if (fs.existsSync(config.localPath)) {
+		console.log("Delete local path")
+		fs.rmSync(config.localPath, { recursive: true, });
+	}
 }
 
-fs.mkdirSync(config.localPath);
+if (!fs.existsSync(config.localPath)) fs.mkdirSync(config.localPath);
 
 function formatBytes(size, useBinary = true) {
 	const units = useBinary
@@ -33,49 +36,55 @@ function getEvtColor(evt) {
 	switch(evt) {
 	case 'delR': return '\x1b[1m\x1b[31m';
 	case 'delL': return '\x1b[1m\x1b[91m';
-	case 'up': return '\x1b[95m';
+	case 'up': return '\x1b[35m';
 	case 'down': return '\x1b[1m\x1b[32m';
 	default   : return '\x1b[0m';
 	}
 }
 
-try {
-	const sftp = new SftpWatch(config);
-	const connectId = sftp.connect();
+function syncCb(file) {
+	const dt  = new Date(file.time);
+	const now = new Date();
 
-	// should yield a number > 0
-	if (!connectId) throw 'Failed to connect to SFTP Server';
-
-	// save returned promise for stopping later
-	const sync = sftp.sync((file) => {
-			const dt  = new Date(file.time);
-			const now = new Date();
-			console.log(
-				`${now.toLocaleString('Lt-lt')} => `
-				+ `${file.status ? 'FINISHED' : 'STARTING'} `
-				+ `${getEvtColor(file.evt)}[${file.evt.padEnd(4)}]\x1b[0m `
-				+ `\x1b[3m<type ${file.type}>\x1b[0m `
-				+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
-				+ `\x1b[34m${file.time}\x1b[0m `
-				+ `${file.perm.toString(8)} `
-				+ `${formatBytes(file.size)} `
-				+ `\x1b[1m\x1b[${file.type == 'f' ? 33 : 36}m${file.name}\x1b[0m `
-			);
-		});
-
-	process.on('SIGINT', async () => {
-			console.log("\nSTOPPING ID", connectId);
-
-			// request stop for connectId
-			sftp.stop(connectId);
-
-			// wait until sync process is stopped
-			const stoppedId = await sync.then(id => id);
-
-			console.log("\nSTOPPED", stoppedId);
-
-			process.exit(0);
-		});
-} catch (error) {
-	console.error(error);
+	console.log(
+		`${now.toLocaleString('Lt-lt')} => `
+		+ `${file.status ? 'FINISHED' : 'STARTING'} `
+		+ `${getEvtColor(file.evt)}[${file.evt.padEnd(4)}]\x1b[0m `
+		+ `\x1b[3m<type ${file.type}>\x1b[0m `
+		+ `\x1b[34m${dt.toLocaleString('Lt-lt')}\x1b[0m `
+		+ `${file.perm.toString(8)} `
+		+ `${formatBytes(file.size)} `
+		+ `\x1b[1m\x1b[${file.type == 'f' ? 33 : 36}m${file.name}\x1b[0m `
+	);
 }
+
+let i = 0;
+const sftp = new SftpWatch(config);
+
+if (!sftp.connect()) {
+	console.error('Failed to connect to SFTP server');
+	process.exit(1);
+}
+
+// save returned promise for stopping later
+let sync = sftp.sync(syncCb);
+
+process.on('SIGINT', async () => {
+		console.log('\nSTOPPING');
+
+		// request stop
+		sftp.stop();
+
+		// wait until sync process is stopped
+		const stop = await sync.then(id => id);
+
+		console.log("\nSTOPPED", stop);
+
+		// restart once again
+		if (i++ > 0) {
+			process.exit(0);
+		} else {
+			sftp.connect();
+			sync = sftp.sync(syncCb);
+		}
+	});
