@@ -1,6 +1,6 @@
 #include "sftp_node_api.hpp"
 
-static void sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
+void SftpNode::sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
 {
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
@@ -8,7 +8,7 @@ static void sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
 	node_ctx->cleanup(env);
 }
 
-static void sync_dir_tsfn_cb(
+void SftpNode::sync_dir_tsfn_cb(
 	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
 {
 	Napi::Object obj = Napi::Object::New(env);
@@ -53,8 +53,8 @@ static void sync_dir_tsfn_cb(
 	node_ctx->sem.release();
 }
 
-static void sync_dir_js_call(SftpWatch_t* ctx, UserData_t data, DirItem_t* file,
-	bool status, EventFile_t ev)
+void SftpNode::sync_dir_js_call(SftpWatch_t* ctx, UserData_t data,
+	DirItem_t* file, bool status, EventFile_t ev)
 {
 	(void)ctx;
 
@@ -72,7 +72,7 @@ static void sync_dir_js_call(SftpWatch_t* ctx, UserData_t data, DirItem_t* file,
 	node_ctx->sem.acquire();
 }
 
-static void thread_cleanup(SftpWatch_t* ctx, UserData_t data)
+void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 {
 	(void)ctx;
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
@@ -182,8 +182,9 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	}
 
 	// ------------------------ Init context -----------------------------------
-	SftpWatch_t* ctx = new SftpWatch_t(host, username, pubkey, privkey,
-		password, remote_dir, local_dir, sync_dir_js_call, thread_cleanup);
+	SftpWatch_t* ctx
+		= new SftpWatch_t(host, username, pubkey, privkey, password, remote_dir,
+			local_dir, SftpNode::sync_dir_js_call, SftpNode::thread_cleanup);
 
 	SftpWatch::set_user_data(ctx, static_cast<UserData_t>(this));
 
@@ -256,7 +257,7 @@ void SftpNode::cleanup(Napi::Env env)
 	//~ this->ctx = nullptr;
 }
 
-Napi::Value SftpNode::js_connect(const Napi::CallbackInfo& info)
+Napi::Value SftpNode::connect(const Napi::CallbackInfo& info)
 {
 	Napi::Env env         = info.Env();
 	uint32_t  max_attempt = 0;
@@ -274,7 +275,7 @@ Napi::Value SftpNode::js_connect(const Napi::CallbackInfo& info)
 	return Napi::Boolean::New(env, false);
 }
 
-Napi::Value SftpNode::js_sync_dir(const Napi::CallbackInfo& info)
+Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -299,23 +300,23 @@ Napi::Value SftpNode::js_sync_dir(const Napi::CallbackInfo& info)
 
 	SftpWatch_t* ctx = this->ctx;
 
-	ctx->is_stopped = false;
-	this->tsfn      = Napi::ThreadSafeFunction::New(env, // Environment
-			 js_cb, // JS function from caller
-			 std::string("watcher_") + std::to_string(9000), // Resource name
-			 0,                  // Max queue_si size (0 = unlimited).
-			 1,                  // Initial thread count
-			 ctx,                // Context,
-			 sync_dir_finalizer, // Finalizer
-			 this                // Finalizer data
-		 );
+	this->tsfn = Napi::ThreadSafeFunction::New(env, // Environment
+		js_cb,                                      // JS function from caller
+		std::string("sftp_") + ctx->host + "_"
+			+ std::to_string(ctx->port),            // Resource name
+		0,                            // Max queue_si size (0 = unlimited).
+		1,                            // Initial thread count
+		ctx,                          // Context,
+		SftpNode::sync_dir_finalizer, // Finalizer
+		this                          // Finalizer data
+	);
 
 	SftpWatch::start(ctx);
 
 	return this->deferred.Promise();
 }
 
-Napi::Value SftpNode::js_sync_stop(const Napi::CallbackInfo& info)
+Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
@@ -324,13 +325,13 @@ Napi::Value SftpNode::js_sync_stop(const Napi::CallbackInfo& info)
 	return env.Undefined();
 }
 
-Napi::Function SftpNode::init(Napi::Env env)
+Napi::Function SftpNode::init_node(Napi::Env env)
 {
 	std::initializer_list<Napi::ClassPropertyDescriptor<SftpNode>> properties
 		= {
-			  SftpNode::InstanceMethod("connect", &SftpNode::js_connect),
-			  SftpNode::InstanceMethod("sync", &SftpNode::js_sync_dir),
-			  SftpNode::InstanceMethod("stop", &SftpNode::js_sync_stop),
+			  SftpNode::InstanceMethod("connect", &SftpNode::connect),
+			  SftpNode::InstanceMethod("sync", &SftpNode::sync_start),
+			  SftpNode::InstanceMethod("stop", &SftpNode::sync_stop),
 		  };
 
 	return SftpNode::DefineClass(env, "SftpNode", properties);
@@ -338,8 +339,7 @@ Napi::Function SftpNode::init(Napi::Env env)
 
 Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 {
-	Napi::String name = Napi::String::New(env, "SftpWatch");
-	exports.Set(name, SftpNode::init(env));
+	exports.Set("SftpWatch", SftpNode::init_node(env));
 	return exports;
 }
 

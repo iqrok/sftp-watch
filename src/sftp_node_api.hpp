@@ -18,7 +18,14 @@ public:
 	Napi::ThreadSafeFunction tsfn;
 	std::binary_semaphore    sem;
 
-	static Napi::Function init(Napi::Env env);
+	static Napi::Function init_node(Napi::Env env);
+	static void sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx);
+	static void sync_dir_tsfn_cb(
+		Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx);
+	static void sync_dir_js_call(SftpWatch_t* ctx, UserData_t data,
+		DirItem_t* file, bool status, EventFile_t ev);
+	static void thread_cleanup(SftpWatch_t* ctx, UserData_t data);
+
 	SftpNode(const Napi::CallbackInfo& info);
 
 	void         cleanup(Napi::Env env);
@@ -27,9 +34,9 @@ public:
 	EvtFile_t*   get_file_event();
 	void         delete_file_event();
 
-	Napi::Value js_sync_dir(const Napi::CallbackInfo& info);
-	Napi::Value js_connect(const Napi::CallbackInfo& info);
-	Napi::Value js_sync_stop(const Napi::CallbackInfo& info);
+	Napi::Value connect(const Napi::CallbackInfo& info);
+	Napi::Value sync_start(const Napi::CallbackInfo& info);
+	Napi::Value sync_stop(const Napi::CallbackInfo& info);
 
 private:
 	SftpWatch_t* ctx = nullptr;
