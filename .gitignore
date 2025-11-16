@@ -2,3 +2,4 @@ build/
 node_modules/
 sample/config.js
 sample/test/
+.gdb_history
