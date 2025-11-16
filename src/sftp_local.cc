@@ -40,18 +40,18 @@ static void conv_stat_attrs(LIBSSH2_SFTP_ATTRIBUTES* attrs, struct stat* st)
 {
 	attrs->flags = 0;
 
-	attrs->filesize = (libssh2_uint64_t)st->st_size;
-	attrs->flags |= (libssh2_uint64_t)st->st_size;
+	attrs->filesize = static_cast<libssh2_uint64_t>(st->st_size);
+	attrs->flags |= static_cast<libssh2_uint64_t>(st->st_size);
 
-	attrs->uid = (unsigned long)st->st_uid;
-	attrs->gid = (unsigned long)st->st_gid;
+	attrs->uid = static_cast<unsigned long>(st->st_uid);
+	attrs->gid = static_cast<unsigned long>(st->st_gid);
 	attrs->flags |= LIBSSH2_SFTP_ATTR_UIDGID;
 
-	attrs->permissions = (unsigned long)st->st_mode;
+	attrs->permissions = static_cast<unsigned long>(st->st_mode);
 	attrs->flags |= LIBSSH2_SFTP_ATTR_PERMISSIONS;
 
-	attrs->atime = (libssh2_uint64_t)st->st_atime;
-	attrs->mtime = (libssh2_uint64_t)st->st_mtime;
+	attrs->atime = static_cast<libssh2_uint64_t>(st->st_atime);
+	attrs->mtime = static_cast<libssh2_uint64_t>(st->st_mtime);
 	attrs->flags |= LIBSSH2_SFTP_ATTR_ACMODTIME;
 }
 
@@ -257,8 +257,8 @@ int32_t SftpLocal::mkdir(SftpWatch_t* ctx, DirItem_t* file)
 	int32_t     rc = 0;
 
 	struct utimbuf times = {
-		.actime  = (time_t)file->attrs.atime,
-		.modtime = (time_t)file->attrs.mtime,
+		.actime  = static_cast<time_t>(file->attrs.atime),
+		.modtime = static_cast<time_t>(file->attrs.mtime),
 	};
 
 	// check if path exists

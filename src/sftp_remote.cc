@@ -34,8 +34,6 @@
 #include <cstring>
 #include <string>
 
-#include <filesystem> // for removing directory
-
 #define FN_RC_EAGAIN(rc, fn)   (((rc) = (fn)) == LIBSSH2_ERROR_EAGAIN)
 #define FN_ACTUAL_ERROR(err)   ((err) != LIBSSH2_ERROR_EAGAIN)
 #define FN_LAST_ERRNO_ERROR(s) FN_ACTUAL_ERROR(libssh2_session_last_errno(s))
@@ -94,7 +92,8 @@ static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session)
 
 	if (dir & LIBSSH2_SESSION_BLOCK_OUTBOUND) writefd = &fd;
 
-	rc = select((int)(socket_fd + 1), readfd, writefd, NULL, &timeout);
+	rc = select(
+		static_cast<int>(socket_fd + 1), readfd, writefd, NULL, &timeout);
 
 	return rc;
 }
@@ -142,14 +141,14 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 }
 
 static LIBSSH2_SFTP_HANDLE* prv_open_file(
-	SftpWatch_t* ctx, const char* remote_path, uint8_t direction, uint32_t mode)
+	SftpWatch_t* ctx, const char* remote_path, uint8_t direction, long mode)
 {
 	LIBSSH2_SFTP_HANDLE* handle = NULL;
 
 	// try to open remote file and wait until socket ready
 	do {
 		handle = libssh2_sftp_open(
-			ctx->sftp_session, remote_path, direction, (long)mode);
+			ctx->sftp_session, remote_path, direction, mode);
 
 		if (!handle) {
 			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
@@ -628,7 +627,7 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		do {
 			char mem[SFTP_READ_BUFFER_SIZE];
 			nread = libssh2_sftp_read(handle, mem, sizeof(mem));
-			if (nread > 0) fwrite(mem, (size_t)nread, 1, fd_local);
+			if (nread > 0) fwrite(mem, static_cast<size_t>(nread), 1, fd_local);
 		} while (nread > 0);
 
 		// error or end of file
@@ -665,8 +664,8 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 	// set modification time for local file to match the remote one
 	// this must be done AFTER CLOSING the file handle
 	struct utimbuf times = {
-		.actime  = (time_t)file->attrs.atime,
-		.modtime = (time_t)file->attrs.mtime,
+		.actime  = static_cast<time_t>(file->attrs.atime),
+		.modtime = static_cast<time_t>(file->attrs.mtime),
 	};
 
 	// set modified & access time time to match remote

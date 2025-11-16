@@ -219,10 +219,12 @@ static void sync_dir_check_conflict(SftpWatch_t* ctx, SyncQueue_t* que,
 	 *       if left-hand is true, right-hand won't be evaluated.
 	 *       So, it's okay if base_snap is still empty and will be added later.
 	 * */
-	bool lb_diff = !b_path || SNOD_FILE_IS_DIFF(
-		ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
-	bool rb_diff = !b_path || SNOD_FILE_IS_DIFF(
-		ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+	bool lb_diff = !b_path
+		|| SNOD_FILE_IS_DIFF(
+			ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
+	bool rb_diff = !b_path
+		|| SNOD_FILE_IS_DIFF(
+			ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
 
 	if (!lb_diff && !rb_diff) {
 		// skip. both files are the same
@@ -315,7 +317,7 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 				sync_dir_check_conflict(ctx, que, b_path, dir, path);
 			} else {
 				// all paths have no diff, Should be unreachable
-				UNREACHABLE_MSG("DIR '%s' PATH '%s': [B %d, L %d, R %d]\n",
+				UNREACHABLE_MSG("DIR '%s' PATH '%s': [B:L:R %d:%d:%d]\n",
 					dir.c_str(), path.c_str(), b_path, l_path, r_path);
 			}
 		}
@@ -482,7 +484,7 @@ int32_t SftpWatch::set_user_data(SftpWatch_t* ctx, UserData_t data)
 
 int32_t SftpWatch::connect_or_reconnect(SftpWatch_t* ctx)
 {
-	if (ctx->is_connected) SftpRemote::disconnect(ctx);
+	SftpWatch::disconnect(ctx);
 
 	if (SftpRemote::connect(ctx)) return -1;
 

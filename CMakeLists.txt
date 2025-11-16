@@ -94,6 +94,7 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 		target_compile_options("${PROJECT_NAME}"
 			PRIVATE
+				-Wold-style-cast
 				-O0
 				-g)
 	endif ()
