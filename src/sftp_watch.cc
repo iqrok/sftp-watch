@@ -7,8 +7,10 @@
 #include <vector>
 
 #include "sftp_local.hpp"
-#include "sftp_watch.hpp"
 #include "sftp_remote.hpp"
+#include "sftp_watch.hpp"
+
+#include "debug.hpp"
 
 #define SNOD_PRV_WAIT_MS 50
 #define SNOD_THREAD_WAIT(i, sum, fl)                                           \
@@ -36,6 +38,19 @@ static std::string prv_get_key(std::string root, std::string full)
 	}
 
 	return full;
+}
+
+static void prv_clear_dirs(DirList_t* dirs)
+{
+	for (auto it = dirs->begin(); it != dirs->end();) {
+		if (it->first == SNOD_SEP) {
+			++it;
+		} else {
+			it = dirs->erase(it);
+		}
+	}
+
+	assert(dirs->size() == 1);
 }
 
 static int sync_dir_local(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
@@ -194,7 +209,7 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 	 * |     1       |      1       |      0       | Delete local      |
 	 * |     1       |      0       |      1       | Delete remote     |
 	 * |     1       |      0       |      0       | (Check Orphans)   |
-	 * |     1       |      1       |      1       | (Check Conflict)  |
+	 * |     -       |      1       |      1       | (Check Conflict)  |
 	 *
 	 * Conflict happens when path exists on all snapshots. When remote and local
 	 * file is different, remote always wins.
@@ -225,6 +240,9 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
 
+			//~ LOG_DBG("DIR '%s' PATH '%s': [B %d, L %d, R %d]\n",
+				//~ dir.c_str(), path.c_str(), b_path, l_path, r_path);
+
 			if (!b_path && !l_path && r_path) {
 				// download
 				ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
@@ -246,8 +264,16 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 				ctx->remote_snap.at(dir).erase(path);
 				ctx->local_snap.at(dir).erase(path);
 			} else if (b_path && !l_path && !r_path) {
-				// remove base
-			} else if (b_path && l_path && r_path) {
+				// remove base. Should be hanlded on Check Orphans
+			} else if (l_path && r_path) {
+				// both remote and local exist, check diff
+
+				// base doesn't exist, initialize with local
+				if (!b_path) {
+					ctx->base_snap[dir][path]
+						= ctx->local_snap.at(dir).at(path);
+				}
+
 				bool lb_diff
 					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
 						ctx->local_snap.at(dir).at(path));
@@ -271,6 +297,7 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 					bool lr_diff
 						= SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path),
 							ctx->remote_snap.at(dir).at(path));
+
 					if (lr_diff) {
 						// download
 						ctx->base_snap[dir][path]
@@ -282,10 +309,15 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 							= ctx->remote_snap.at(dir).at(path);
 					}
 				} else {
-					// no diff at all. Should not be reached
+					// no diff at all. Should be unreachable
+					UNREACHABLE_MSG(
+						"CONFLICT CHECK DIR '%s' PATH '%s': [%d, %d]\n",
+						dir.c_str(), path.c_str(), lb_diff, rb_diff);
 				}
 			} else {
-				// all paths have no diff, continue
+				// all paths have no diff, Should be unreachable
+				UNREACHABLE_MSG("DIR '%s' PATH '%s': [B %d, L %d, R %d]\n",
+					dir.c_str(), path.c_str(), b_path, l_path, r_path);
 			}
 		}
 	}
@@ -464,7 +496,13 @@ int32_t SftpWatch::connect_or_reconnect(SftpWatch_t* ctx)
 
 void SftpWatch::start(SftpWatch_t* ctx)
 {
-	ctx->thread = std::thread(sync_thread, ctx);
+	ctx->is_stopped = false;
+	ctx->thread     = std::thread(sync_thread, ctx);
+}
+
+void SftpWatch::request_stop(SftpWatch_t* ctx)
+{
+	ctx->is_stopped = true;
 }
 
 void SftpWatch::disconnect(SftpWatch_t* ctx)
@@ -478,7 +516,9 @@ void SftpWatch::clear(SftpWatch_t* ctx)
 	ctx->base_snap.clear();
 	ctx->local_snap.clear();
 	ctx->remote_snap.clear();
-	ctx->remote_dirs.clear();
-	ctx->local_dirs.clear();
+
+	prv_clear_dirs(&ctx->remote_dirs);
+	prv_clear_dirs(&ctx->local_dirs);
+
 	ctx->err_count = 0;
 }

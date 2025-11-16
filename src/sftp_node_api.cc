@@ -319,8 +319,7 @@ Napi::Value SftpNode::js_sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
-	SftpWatch_t* ctx = this->ctx;
-	ctx->is_stopped  = true;
+	SftpWatch::request_stop(this->ctx);
 
 	return env.Undefined();
 }

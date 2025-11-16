@@ -26,6 +26,7 @@
 #	error "UNKNOWN ENVIRONMENT"
 #endif
 
+#include "debug.hpp"
 #include "sftp_local.hpp"
 #include "sftp_remote.hpp"
 
@@ -48,6 +49,8 @@
 			for (uint8_t fp_byte : fp) LOG_ERR(":%02X", fp_byte);              \
 			LOG_ERR("\n");                                                     \
 		} while (0)
+#else
+#	define LOG_DBG_FINGERPRINT(fp) ((void)fp)
 #endif
 
 namespace { // start of unnamed namespace for static function

@@ -19,13 +19,6 @@
 #	include <windows.h>
 #endif
 
-#ifndef NDEBUG
-/** Alias for SIGTRAP in debug mode. */
-#	define __breakpoint() asm volatile("int $3")
-#else
-#	define __breakpoint()
-#endif
-
 // default to 30000, as it is the value of max SFTP Packet
 #ifndef SFTP_READ_BUFFER_SIZE
 #	define SFTP_READ_BUFFER_SIZE 30000
@@ -73,12 +66,6 @@
 #endif
 
 #define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
-
-#ifndef NDEBUG
-#	define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#	define LOG_DBG(...) ((void)0)
-#endif
 
 enum FileType_e {
 	IS_INVALID  = '0',
@@ -215,8 +202,8 @@ namespace SftpWatch {
 void    disconnect(SftpWatch_t* ctx);
 int32_t connect_or_reconnect(SftpWatch_t* ctx);
 int32_t set_user_data(SftpWatch_t* ctx, UserData_t data);
-//~ void    sync_thread(SftpWatch_t* ctx);
 void    start(SftpWatch_t* ctx);
+void    request_stop(SftpWatch_t* ctx);
 void    clear(SftpWatch_t* ctx);
 
 }
