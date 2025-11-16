@@ -196,6 +196,65 @@ static int sync_dir_remote(SftpWatch_t* ctx, Directory_t& dir, AllIns_t* ins)
 	return 0;
 }
 
+static void sync_dir_check_conflict(SftpWatch_t* ctx, SyncQueue_t* que,
+	bool& b_path, const std::string& dir, const std::string& path)
+{
+	/*
+	 * Conflict happens when path exists on remote and local snapshots.
+	 * When remote and local file is different, remote always wins for now.
+	 *
+	 * Conflict Resolution is done following this table
+	 *
+	 * | Local != Base | Remote != Base | Local != Remote |     Operation      |
+	 * |---------------|----------------|-----------------|--------------------|
+	 * |      0        |       0        |       -         | (Skip. Same Files) |
+	 * |      1        |       0        |       -         | Upload             |
+	 * |      0        |       1        |       -         | Download           |
+	 * |      1        |       1        |       1         | Download           |
+	 * |      1        |       1        |       0         | Update Base        |
+	 *
+	 * */
+
+	/* NOTE: short-circuit OR,
+	 *       if left-hand is true, right-hand won't be evaluated.
+	 *       So, it's okay if base_snap is still empty and will be added later.
+	 * */
+	bool lb_diff = !b_path || SNOD_FILE_IS_DIFF(
+		ctx->base_snap.at(dir).at(path), ctx->local_snap.at(dir).at(path));
+	bool rb_diff = !b_path || SNOD_FILE_IS_DIFF(
+		ctx->base_snap.at(dir).at(path), ctx->remote_snap.at(dir).at(path));
+
+	if (!lb_diff && !rb_diff) {
+		// skip. both files are the same
+		return;
+	} else if (lb_diff && !rb_diff) {
+		// upload
+		ctx->base_snap[dir][path] = ctx->local_snap.at(dir).at(path);
+		que->l_new.push_back(&ctx->base_snap[dir][path]);
+	} else if (!lb_diff && rb_diff) {
+		// download
+		ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
+		que->r_new.push_back(&ctx->base_snap[dir][path]);
+	} else if (lb_diff && rb_diff) {
+		bool lr_diff = SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path),
+			ctx->remote_snap.at(dir).at(path));
+
+		// TODO: rule like 'remote-wins' or 'local-wins' could be applied here
+		if (lr_diff) {
+			// download
+			ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
+			que->r_new.push_back(&ctx->base_snap[dir][path]);
+		} else {
+			// actually the base is outdated
+			ctx->base_snap[dir][path] = ctx->remote_snap.at(dir).at(path);
+		}
+	} else {
+		// no diff at all. Should be unreachable
+		UNREACHABLE_MSG("CONFLICT CHECK DIR '%s' PATH '%s': [%d, %d]\n",
+			dir.c_str(), path.c_str(), lb_diff, rb_diff);
+	}
+}
+
 static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 {
 	/*
@@ -211,18 +270,6 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 	 * |     1       |      0       |      0       | (Check Orphans)   |
 	 * |     -       |      1       |      1       | (Check Conflict)  |
 	 *
-	 * Conflict happens when path exists on all snapshots. When remote and local
-	 * file is different, remote always wins.
-	 *
-	 * Conflict Resolution is done following this table
-	 *
-	 * | Local != Base | Remote != Base | Local != Remote |     Operation     |
-	 * |---------------|----------------|-----------------|-------------------|
-	 * |      1        |       0        |       -         | Upload            |
-	 * |      0        |       1        |       -         | Download          |
-	 * |      1        |       1        |       1         | Download          |
-	 * |      1        |       1        |       0         | Update Base       |
-	 *
 	 * Orphaned Item is defined as a path whose parent directory no longer
 	 * exists both in remote and local. Orphaned items will be removed from
 	 * all snapshots.
@@ -236,12 +283,10 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 		bool r_dir = ctx->remote_snap.contains(dir);
 
 		for (const auto& path : lpath) {
+			// NOTE: short-circuit AND. If left is false, right-hand is skipped
 			bool b_path = b_dir && ctx->base_snap.at(dir).contains(path);
 			bool l_path = l_dir && ctx->local_snap.at(dir).contains(path);
 			bool r_path = r_dir && ctx->remote_snap.at(dir).contains(path);
-
-			//~ LOG_DBG("DIR '%s' PATH '%s': [B %d, L %d, R %d]\n",
-				//~ dir.c_str(), path.c_str(), b_path, l_path, r_path);
 
 			if (!b_path && !l_path && r_path) {
 				// download
@@ -267,53 +312,7 @@ static void sync_dir_cmp_snap(SftpWatch_t* ctx, AllIns_t& ins, SyncQueue_t* que)
 				// remove base. Should be hanlded on Check Orphans
 			} else if (l_path && r_path) {
 				// both remote and local exist, check diff
-
-				// base doesn't exist, initialize with local
-				if (!b_path) {
-					ctx->base_snap[dir][path]
-						= ctx->local_snap.at(dir).at(path);
-				}
-
-				bool lb_diff
-					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
-						ctx->local_snap.at(dir).at(path));
-				bool rb_diff
-					= SNOD_FILE_IS_DIFF(ctx->base_snap.at(dir).at(path),
-						ctx->remote_snap.at(dir).at(path));
-
-				if (!lb_diff && !rb_diff) continue;
-
-				if (lb_diff && !rb_diff) {
-					// upload
-					ctx->base_snap[dir][path]
-						= ctx->local_snap.at(dir).at(path);
-					que->l_new.push_back(&ctx->base_snap[dir][path]);
-				} else if (!lb_diff && rb_diff) {
-					// download
-					ctx->base_snap[dir][path]
-						= ctx->remote_snap.at(dir).at(path);
-					que->r_new.push_back(&ctx->base_snap[dir][path]);
-				} else if (lb_diff && rb_diff) {
-					bool lr_diff
-						= SNOD_FILE_IS_DIFF(ctx->local_snap.at(dir).at(path),
-							ctx->remote_snap.at(dir).at(path));
-
-					if (lr_diff) {
-						// download
-						ctx->base_snap[dir][path]
-							= ctx->remote_snap.at(dir).at(path);
-						que->r_new.push_back(&ctx->base_snap[dir][path]);
-					} else {
-						// actually the base is outdated
-						ctx->base_snap[dir][path]
-							= ctx->remote_snap.at(dir).at(path);
-					}
-				} else {
-					// no diff at all. Should be unreachable
-					UNREACHABLE_MSG(
-						"CONFLICT CHECK DIR '%s' PATH '%s': [%d, %d]\n",
-						dir.c_str(), path.c_str(), lb_diff, rb_diff);
-				}
+				sync_dir_check_conflict(ctx, que, b_path, dir, path);
 			} else {
 				// all paths have no diff, Should be unreachable
 				UNREACHABLE_MSG("DIR '%s' PATH '%s': [B %d, L %d, R %d]\n",
