@@ -23,9 +23,13 @@ if (WIN32)
 	endif ()
 
 	set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-endif ()
 
-message(STATUS ${CMAKE_TOOLCHAIN_FILE})
+	if (USE_STATIC_LIBS)
+		set(VCPKG_TARGET_TRIPLET "x64-windows-static")
+		set(VCPKG_HOST_TRIPLET "x64-windows-static")
+		set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+	endif ()
+endif ()
 
 project(sftp-watch
 	LANGUAGES C CXX
@@ -137,7 +141,16 @@ if (USE_STATIC_LIBS)
 	message(STATUS "USING STATIC LIBS")
 	set(ZLIB_USE_STATIC_LIBS ON)
 	set(OPENSSL_USE_STATIC_LIBS ON)
+	set(LIBSSH2_USE_STATIC_LIBS ON)
 	set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".lib")
+
+	if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+		# need to define LIBSSH2_API as empty, otherwise dll import is assumed
+		target_compile_definitions("${PROJECT_NAME}"
+			PRIVATE
+				LIBSSH2_API=
+			)
+	endif ()
 endif ()
 
 find_package(Threads REQUIRED)
@@ -172,12 +185,22 @@ if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
 	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{LIBSSH2_DIR}")
 else ()
-	find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2 REQUIRED)
-	find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
+	find_package(libssh2 QUIET)
 
-	target_link_libraries("${PROJECT_NAME}"
-		PRIVATE "${LIBSSH2_LIBRARY}")
+	if (libssh2_FOUND)
+		target_link_libraries("${PROJECT_NAME}"
+			PRIVATE
+				libssh2::libssh2)
+	else ()
+		find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2 REQUIRED)
+		find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
 
-	target_include_directories("${PROJECT_NAME}"
-		PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+		message(STATUS "Found libssh2 ${LIBSSH2_LIBRARY}")
+
+		target_link_libraries("${PROJECT_NAME}"
+			PRIVATE "${LIBSSH2_LIBRARY}")
+
+		target_include_directories("${PROJECT_NAME}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+	endif ()
 endif ()
