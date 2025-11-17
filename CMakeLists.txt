@@ -33,6 +33,7 @@ project(sftp-watch
 
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(INC_DIR "${SRC_DIR}/include")
+set(TARGET_LIB_DIR "${CMAKE_BINARY_DIR}/lib")
 
 if (NOT "$ENV{SFTP_READ_BUFFER_SIZE}" STREQUAL "")
 	set(SFTP_READ_BUFFER_SIZE "$ENV{SFTP_READ_BUFFER_SIZE}")
@@ -51,10 +52,11 @@ add_library("${PROJECT_NAME}"
 		"${SRC_DIR}/sftp_node_api.cc")
 
 set_target_properties("${PROJECT_NAME}"
-	PROPERTIES POSITION_INDEPENDENT_CODE 1
-	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-	PREFIX ""
-	SUFFIX ".node")
+	PROPERTIES
+		POSITION_INDEPENDENT_CODE 1
+		LIBRARY_OUTPUT_DIRECTORY "${TARGET_LIB_DIR}"
+		PREFIX ""
+		SUFFIX ".node")
 
 target_include_directories("${PROJECT_NAME}"
 	PRIVATE
@@ -101,22 +103,32 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU
 
 	# prefer pthread if available
 	set(THREADS_PREFER_PTHREAD_FLAG ON)
+
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+	set(THREADS_PREFER_PTHREAD_FLAG OFF)
 	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
-	target_compile_options("${PROJECT_NAME}"
-		PRIVATE
-			#~ -EHsc # enable exception
-			-W4   # equivalent of -Wall
-			-O2)
+
+	# Windows .dll is treated as runtime not library
+	set_target_properties("${PROJECT_NAME}"
+		PROPERTIES
+			RUNTIME_OUTPUT_DIRECTORY "${TARGET_LIB_DIR}"
+			RUNTIME_OUTPUT_DIRECTORY_RELEASE "${TARGET_LIB_DIR}"
+			RUNTIME_OUTPUT_DIRECTORY_DEBUG "${TARGET_LIB_DIR}")
 
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 		target_compile_options("${PROJECT_NAME}"
 			PRIVATE
-				-Og
-				-ggdb)
+				-Zi
+				-Od)
+	else ()
+		target_compile_options("${PROJECT_NAME}"
+			PRIVATE
+				#~ -EHsc # enable exception
+				-Wall
+				-W4
+				-O2)
 	endif ()
 
-	set(THREADS_PREFER_PTHREAD_FLAG OFF)
 else ()
 	message(FATAL_ERROR "Unknown Environment")
 endif ()
