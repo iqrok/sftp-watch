@@ -8,6 +8,7 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#include <string>
 
 #include <libssh2.h>
 #include <libssh2_sftp.h>

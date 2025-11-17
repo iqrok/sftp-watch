@@ -5,10 +5,10 @@
 #	include <cassert> // for assert()
 
 /** Alias for SIGTRAP in debug mode. */
-#	if defined(__has_builtin) && __has_builtin(__builtin_debugtrap)
-#		define BREAKPOINT() __builtin_debugtrap()
-#	elif defined(_MSC_VER)
+#	if defined(_MSC_VER)
 #		define BREAKPOINT() __debugbreak()
+#	elif defined(__has_builtin) && __has_builtin(__builtin_debugtrap)
+#		define BREAKPOINT() __builtin_debugtrap()
 #	else
 #		include <signal.h>
 #		define BREAKPOINT() raise(SIGTRAP)
@@ -26,9 +26,10 @@
 
 #else
 
-#	define BREAKPOINT() ((void)0)
-#	define assert(...)  ((void)0)
-#	define LOG_DBG(...) ((void)0)
+#	define BREAKPOINT()         ((void)0)
+#	define assert(...)          ((void)0)
+#	define LOG_DBG(...)         ((void)0)
+#	define UNREACHABLE_MSG(...) ((void)0)
 
 #endif
 
