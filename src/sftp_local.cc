@@ -57,31 +57,6 @@ static void conv_stat_attrs(LIBSSH2_SFTP_ATTRIBUTES* attrs, struct stat* st)
 
 }
 
-uint8_t SftpLocal::get_filetype(DirItem_t* file)
-{
-	if (file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
-		if (LIBSSH2_SFTP_S_ISREG(file->attrs.permissions)) {
-			return IS_REG_FILE;
-		} else if (LIBSSH2_SFTP_S_ISDIR(file->attrs.permissions)) {
-			return IS_DIR;
-		} else if (LIBSSH2_SFTP_S_ISLNK(file->attrs.permissions)) {
-			return IS_SYMLINK;
-		} else if (LIBSSH2_SFTP_S_ISCHR(file->attrs.permissions)) {
-			return IS_CHR_FILE;
-		} else if (LIBSSH2_SFTP_S_ISBLK(file->attrs.permissions)) {
-			return IS_BLK_FILE;
-		} else if (LIBSSH2_SFTP_S_ISFIFO(file->attrs.permissions)) {
-			return IS_PIPE;
-		} else if (LIBSSH2_SFTP_S_ISSOCK(file->attrs.permissions)) {
-			return IS_SOCK;
-		} else {
-			return IS_INVALID;
-		}
-	} else {
-		return IS_INVALID;
-	}
-}
-
 int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 {
 	if (dir->is_opened) SftpLocal::close_dir(ctx, dir);
@@ -226,7 +201,7 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 
 	conv_stat_attrs(&file->attrs, &st);
 
-	file->type = SftpLocal::get_filetype(file);
+	file->type = SftpWatch::get_filetype(file);
 	file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
 
 	return 1;

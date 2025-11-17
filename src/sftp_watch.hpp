@@ -199,6 +199,7 @@ struct SftpWatch_s {
 
 namespace SftpWatch {
 
+uint8_t get_filetype(DirItem_t* file);
 void    disconnect(SftpWatch_t* ctx);
 int32_t connect_or_reconnect(SftpWatch_t* ctx);
 int32_t set_user_data(SftpWatch_t* ctx, UserData_t data);

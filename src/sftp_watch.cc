@@ -473,6 +473,30 @@ void sync_thread(SftpWatch_t* ctx)
 } /* ******************** End of Static Functions *************************** */
 
 /* ************************ API Implementations ***************************** */
+
+uint8_t SftpWatch::get_filetype(DirItem_t* file)
+{
+	if (!(file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)) return IS_INVALID;
+
+	if (LIBSSH2_SFTP_S_ISREG(file->attrs.permissions)) {
+		return IS_REG_FILE;
+	} else if (LIBSSH2_SFTP_S_ISDIR(file->attrs.permissions)) {
+		return IS_DIR;
+	} else if (LIBSSH2_SFTP_S_ISLNK(file->attrs.permissions)) {
+		return IS_SYMLINK;
+	} else if (LIBSSH2_SFTP_S_ISCHR(file->attrs.permissions)) {
+		return IS_CHR_FILE;
+	} else if (LIBSSH2_SFTP_S_ISBLK(file->attrs.permissions)) {
+		return IS_BLK_FILE;
+	} else if (LIBSSH2_SFTP_S_ISFIFO(file->attrs.permissions)) {
+		return IS_PIPE;
+	} else if (LIBSSH2_SFTP_S_ISSOCK(file->attrs.permissions)) {
+		return IS_SOCK;
+	} else {
+		return IS_INVALID;
+	}
+}
+
 int32_t SftpWatch::set_user_data(SftpWatch_t* ctx, UserData_t data)
 {
 	if (!ctx || !data) return -1;

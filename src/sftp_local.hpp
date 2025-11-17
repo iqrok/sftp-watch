@@ -7,7 +7,6 @@
 
 namespace SftpLocal {
 
-uint8_t get_filetype(DirItem_t* file);
 int32_t filestat(
 	SftpWatch_t* ctx, std::string& path, LIBSSH2_SFTP_ATTRIBUTES* res);
 
