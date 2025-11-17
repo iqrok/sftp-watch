@@ -1,38 +1,31 @@
-const SftpWatch = require('..');
+import fs from 'node:fs';
+import SftpWatch from '@iqrok/sftp-watch';
 
-const config = require('./config.json');
+import config from './config.json' with { type: "json" };
 
 // overwrite localPath to use sample/test directory
-config.localPath = __dirname + '/test';
-
-const fs = require('fs');
-if (process.argv.length > 2) {
-	if (fs.existsSync(config.localPath)) {
-		console.log("Delete local path")
-		fs.rmSync(config.localPath, { recursive: true, });
-	}
-}
+config.localPath = import.meta.dirname + '/test';
 
 if (!fs.existsSync(config.localPath)) fs.mkdirSync(config.localPath);
 
-function formatBytes(size, useBinary = true) {
-	const units = useBinary
+function formatBytes(size: number, useBinary: boolean = true): string {
+	const units: string[] = useBinary
 		? ['B', 'KiB', 'MiB', 'GiB', 'TiB']
 		: ['B', 'KB', 'MB', 'GB', 'TB'];
-	const step = useBinary ? 1024 : 1000;
-	const pad = useBinary ? 3 : 2;
+	const step: number = useBinary ? 1024 : 1000;
+	const pad: number = useBinary ? 3 : 2;
 
 	if (size < 0 || !size) return '	0 ' + 'B'.padEnd(pad);
 
-	let i = 0;
+	let i: number = 0;
 	for (i = 0; size >= step && i < units.length - 1; i++) size /= step;
 
 	// right-align number, unit always occupies last 2–3 chars
-	const formatted = size.toFixed(size < 10 && i > 0 ? 2 : 0);
+	const formatted: string = size.toFixed(size < 10 && i > 0 ? 2 : 0);
 	return `${formatted.padStart(6)} ${units[i].padEnd(pad)}`;
 }
 
-function getEvtColor(evt) {
+function getEvtColor(evt: string): string {
 	switch(evt) {
 	case 'delR': return '\x1b[1m\x1b[31m';
 	case 'delL': return '\x1b[1m\x1b[91m';
@@ -42,9 +35,9 @@ function getEvtColor(evt) {
 	}
 }
 
-function syncCb(file) {
-	const dt  = new Date(file.time);
-	const now = new Date();
+function syncCb(file: FileInfo): void {
+	const dt: Date  = new Date(file.time);
+	const now: Date = new Date();
 
 	console.log(
 		`${now.toLocaleString('Lt-lt')} => `
@@ -58,7 +51,7 @@ function syncCb(file) {
 	);
 }
 
-let i = 0;
+let i: number = 0;
 const sftp = new SftpWatch(config);
 
 if (!sftp.connect()) {

@@ -1,6 +1,16 @@
 {
 	"name": "@iqrok/sftp-watch",
 	"version": "0.4.0",
+	"main": "exports/index.cjs",
+	"module": "exports/index.mjs",
+	"types": "exports/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./exports/index.d.ts",
+			"import": "./exports/index.mjs",
+			"require": "./exports/index.cjs"
+		}
+	},
 	"files": [
 		"src/*.cc",
 		"src/*.cpp",
@@ -18,7 +28,6 @@
 		"clean": "cmake-js clean",
 		"postinstall": "npm run compile"
 	},
-	"main": "main.js",
 	"devDependencies": {
 		"cmake-js": "^7.3.1"
 	},
