@@ -55,8 +55,6 @@ NOTE: I am not very familiar with building on Windows. I installed the libraries
 
 You can read how I prepared my Windows environment in [this note](https://gitlab.com/-/snippets/4901502)
 
-# Docs
-
 ## Interface
 
 ### Config
@@ -109,53 +107,10 @@ This callback is called every time a file or directory is successfully synced.
 
 ---
 
-## API
-
-### `connect(config)`
-
-Establishes a connection to the remote SFTP target.
-
-#### Parameters
-- **config** - [`Config`](#config) object.
-
-#### Returns
-- A **connection ID** if the connection is successfully established.
-- Throws an **Error** if the configuration is invalid or the connection cannot be made.
-
----
-
-### `sync(conId, syncCb)`
-
-Starts the synchronization process using an active connection.
-
-#### Parameters
-- **conId** - `number`, the connection ID returned by [`connect`](#connectconfig).
-- **syncCb** - `Function`, the callback function to handle file sync events.
-
-#### Returns
-- `true` if the sync process is successfully started.
-- Throws an **Error** if parameters are invalid.
-
----
-
-### `stop(conId)`
-
-Stops the synchronization process for an active connection.
-
-#### Parameters
-- **conId** - `number`, the connection ID associated with the active sync process.
-
-#### Returns
-- `undefined`.
-- Throws an **Error** if parameters are invalid.
-
----
-
 ## Example Usage
 
 ```js
-const SftpWatch = require('..');
-const { connect, sync, stop } = SftpWatch;
+const SftpWatch = require('@iqrok/sftp-watch');
 
 const config = {
   host: '192.168.1.10',
@@ -169,32 +124,32 @@ const config = {
   maxErrCount: 5
 };
 
-const conId = connect(config);
+const sftp = new SftpWatch(config);
 
 const syncCb = (info) => {
   console.log(`[${info.evt}] ${info.type === 'd' ? 'DIR' : 'FILE'} ${info.name}`);
 };
 
-sync(conId, syncCb);
+sftp.connect();
+const sync = sftp.sync(syncCb);
 
 // stop monitoring on ctrl + c;
 process.on('SIGINT', async () => {
-   await stop(conId);
+   sftp.stop();
+   await sync;
    process.exit(0);
 });
 ```
 
 # Limitations
 
-I created this module out of curiosity, so several limitations were intentionally made to keep my sanity. Known limitations are as follows:
+Known limitations are as follows:
 
 - Sub-direcory and all its contents are synchronized. But no depth limit has been implemented yet.
 
 - Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file.
 
 - Renaming and moving a file/directory is handled as deletion -> creation. It would be a problem if the file size is large or the directory contains many files
-
-- Error handling is still limited, particularly regarding failed connections and failed directory or file reads.
 
 - Many errors are still hidden within the C++ layer and have not yet been exposed to JavaScript.
 
