@@ -23,14 +23,14 @@ export interface FileInfo {
 	time: number;
 	size: number;
 	name: string;
+	perm: number;
 }
 
 export type SyncCallback = (info: FileInfo) => void;
 
-declare const SftpWatch: {
-	connect(): boolean;
+export default class SftpWatch {
+	constructor(config: Config);
+	connect(maxAttempt?: number): boolean;
 	sync(syncCb: SyncCallback): Promise<string>;
 	stop(): void;
-};
-
-export = SftpWatch;
+}

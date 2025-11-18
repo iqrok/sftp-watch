@@ -1,2 +1,2 @@
-import SftpWatch from './index.cjs';
+import SftpWatch from './index.mjs';
 export default SftpWatch;

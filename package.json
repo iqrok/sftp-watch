@@ -1,6 +1,7 @@
 {
 	"name": "@iqrok/sftp-watch",
 	"version": "0.4.0",
+	"type": "module",
 	"main": "exports/index.cjs",
 	"module": "exports/index.mjs",
 	"types": "exports/index.d.ts",
