@@ -1,15 +1,15 @@
 #ifndef _SFTP_NODE_HPP
 #define _SFTP_NODE_HPP
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <semaphore>
 #include <thread>
+#include <unordered_set>
 #include <vector>
+#include <string>
 
-#include <napi.h>
-
-#include "libssh2_setup.h"
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
@@ -68,12 +68,6 @@
 
 #define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
 
-#ifndef NDEBUG
-#	define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#	define LOG_DBG(...) ((void)0)
-#endif
-
 enum FileType_e {
 	IS_INVALID  = '0',
 	IS_SYMLINK  = 'l',
@@ -85,14 +79,36 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
-typedef struct EvtFile_s   EvtFile_t;
+typedef enum EventFile_e {
+	EVT_FILE_LDEL = 0x00,
+	EVT_FILE_UP   = 0x01,
+	EVT_FILE_RDEL = 0x02,
+	EVT_FILE_DOWN = 0x03,
+} EventFile_t;
+
+typedef void* UserData_t;
+
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
 typedef struct Directory_s Directory_t;
+typedef struct SyncQueue_s SyncQueue_t;
 
 typedef std::map<std::string, Directory_t> DirList_t;
 typedef std::map<std::string, DirItem_t>   PathFile_t;
 typedef std::map<std::string, PathFile_t>  DirSnapshot_t;
+
+typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
+
+typedef void (*sync_file_cb)(SftpWatch_t* ctx, UserData_t data, DirItem_t* file,
+	bool status, EventFile_t ev);
+typedef void (*sync_cleanup_cb)(SftpWatch_t* ctx, UserData_t data);
+
+struct SyncQueue_s {
+	std::vector<DirItem_t*> l_new;
+	std::vector<DirItem_t*> r_new;
+	std::vector<DirItem_t>  r_del;
+	std::vector<DirItem_t>  l_del;
+};
 
 struct DirItem_s {
 	/** Type of file as stated in #FileType_e */
@@ -118,12 +134,12 @@ struct Directory_s {
 	/** Directory handle for local directory in POSIX. unused for remote */
 	DIR* loc_handle = NULL;
 #elif defined(_WIN32)
+	/** Directory handle for local directory in WIN32. unused for remote */
 	HANDLE loc_handle = NULL;
 #endif
 };
 
 struct SftpWatch_s {
-	uint32_t    id;
 	int16_t     timeout_sec = 60U;
 	uint16_t    port        = 22U;
 	std::string host;
@@ -136,20 +152,19 @@ struct SftpWatch_s {
 	std::string password;
 	bool        use_keyboard = true;
 
-	bool    is_connected  = false;
-	uint8_t err_count     = 0;
-	uint8_t max_err_count = 3;
+	std::atomic<bool>    is_connected  = false;
+	std::atomic<uint8_t> err_count     = 0;
+	uint8_t              max_err_count = 3;
+
+	std::atomic<bool> is_stopped = false; /**< set to true to stop sync loop */
+	uint32_t          delay_ms   = 1000;  /**< delay between sync loop */
 
 	libssh2_socket_t     sock;
 	LIBSSH2_SESSION*     session;
 	LIBSSH2_SFTP*        sftp_session;
-	struct sockaddr_in   sin;
 	std::vector<uint8_t> fingerprint;
 
-	Napi::Promise::Deferred  deferred;
-	std::thread              thread;
-	Napi::ThreadSafeFunction tsfn;
-	std::binary_semaphore    sem;
+	std::thread thread;
 
 	/** Snapshots */
 	DirSnapshot_t base_snap;
@@ -160,30 +175,39 @@ struct SftpWatch_s {
 	DirList_t remote_dirs;
 	DirList_t local_dirs;
 
-	/** pointer to event data for js callback */
-	EvtFile_t* ev_file;
+	sync_file_cb    cb_file;
+	sync_cleanup_cb cb_cleanup;
 
-	bool     is_stopped = false; /**< set to true to stop sync loop */
-	uint32_t delay_ms   = 1000;  /**< delay between sync loop */
+	UserData_t user_data = nullptr;
 
-	SftpWatch_s(Napi::Env env, uint32_t id, std::string host,
-		std::string username, std::string pubkey, std::string privkey,
-		std::string password, Directory_t remote_dir, Directory_t local_dir)
-		: id(id)
-		, host(host)
+	SftpWatch_s(std::string host, std::string username, std::string pubkey,
+		std::string privkey, std::string password, Directory_t remote_dir,
+		Directory_t local_dir, sync_file_cb cb_file, sync_cleanup_cb cb_cleanup)
+		: host(host)
 		, username(username)
 		, remote_path(remote_dir.path)
 		, local_path(local_dir.path)
 		, pubkey(pubkey)
 		, privkey(privkey)
 		, password(password)
-		, deferred(Napi::Promise::Deferred::New(env))
-		, sem(0) // semaphore is initially locked
-		, is_stopped(false)
+		, cb_file(cb_file)
+		, cb_cleanup(cb_cleanup)
 	{
 		this->remote_dirs[SNOD_SEP] = remote_dir;
 		this->local_dirs[SNOD_SEP]  = local_dir;
 	}
 };
+
+namespace SftpWatch {
+
+uint8_t get_filetype(DirItem_t* file);
+void    disconnect(SftpWatch_t* ctx);
+int32_t connect_or_reconnect(SftpWatch_t* ctx);
+int32_t set_user_data(SftpWatch_t* ctx, UserData_t data);
+void    start(SftpWatch_t* ctx);
+void    request_stop(SftpWatch_t* ctx);
+void    clear(SftpWatch_t* ctx);
+
+}
 
 #endif

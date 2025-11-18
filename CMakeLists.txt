@@ -23,9 +23,13 @@ if (WIN32)
 	endif ()
 
 	set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-endif ()
 
-message(STATUS ${CMAKE_TOOLCHAIN_FILE})
+	if (USE_STATIC_LIBS)
+		set(VCPKG_TARGET_TRIPLET "x64-windows-static")
+		set(VCPKG_HOST_TRIPLET "x64-windows-static")
+		set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+	endif ()
+endif ()
 
 project(sftp-watch
 	LANGUAGES C CXX
@@ -33,6 +37,7 @@ project(sftp-watch
 
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(INC_DIR "${SRC_DIR}/include")
+set(TARGET_LIB_DIR "${CMAKE_BINARY_DIR}/lib")
 
 if (NOT "$ENV{SFTP_READ_BUFFER_SIZE}" STREQUAL "")
 	set(SFTP_READ_BUFFER_SIZE "$ENV{SFTP_READ_BUFFER_SIZE}")
@@ -47,13 +52,15 @@ add_library("${PROJECT_NAME}"
 		${CMAKE_JS_SRC}
 		"${SRC_DIR}/sftp_local.cc"
 		"${SRC_DIR}/sftp_remote.cc"
-		"${SRC_DIR}/sftp_node.cc")
+		"${SRC_DIR}/sftp_watch.cc"
+		"${SRC_DIR}/sftp_node_api.cc")
 
 set_target_properties("${PROJECT_NAME}"
-	PROPERTIES POSITION_INDEPENDENT_CODE 1
-	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-	PREFIX ""
-	SUFFIX ".node")
+	PROPERTIES
+		POSITION_INDEPENDENT_CODE 1
+		LIBRARY_OUTPUT_DIRECTORY "${TARGET_LIB_DIR}"
+		PREFIX ""
+		SUFFIX ".node")
 
 target_include_directories("${PROJECT_NAME}"
 	PRIVATE
@@ -93,28 +100,39 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 		target_compile_options("${PROJECT_NAME}"
 			PRIVATE
-				-Og
-				-ggdb)
+				-Wold-style-cast
+				-O0
+				-g)
 	endif ()
 
 	# prefer pthread if available
 	set(THREADS_PREFER_PTHREAD_FLAG ON)
+
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+	set(THREADS_PREFER_PTHREAD_FLAG OFF)
 	target_link_libraries("${PROJECT_NAME}" PRIVATE ws2_32)
-	target_compile_options("${PROJECT_NAME}"
-		PRIVATE
-			#~ -EHsc # enable exception
-			-W4   # equivalent of -Wall
-			-O2)
+
+	# Windows .dll is treated as runtime not library
+	set_target_properties("${PROJECT_NAME}"
+		PROPERTIES
+			RUNTIME_OUTPUT_DIRECTORY "${TARGET_LIB_DIR}"
+			RUNTIME_OUTPUT_DIRECTORY_RELEASE "${TARGET_LIB_DIR}"
+			RUNTIME_OUTPUT_DIRECTORY_DEBUG "${TARGET_LIB_DIR}")
 
 	if (CMAKE_BUILD_TYPE STREQUAL "Debug")
 		target_compile_options("${PROJECT_NAME}"
 			PRIVATE
-				-Og
-				-ggdb)
+				-Zi
+				-Od)
+	else ()
+		target_compile_options("${PROJECT_NAME}"
+			PRIVATE
+				#~ -EHsc # enable exception
+				-Wall
+				-W4
+				-O2)
 	endif ()
 
-	set(THREADS_PREFER_PTHREAD_FLAG OFF)
 else ()
 	message(FATAL_ERROR "Unknown Environment")
 endif ()
@@ -123,7 +141,16 @@ if (USE_STATIC_LIBS)
 	message(STATUS "USING STATIC LIBS")
 	set(ZLIB_USE_STATIC_LIBS ON)
 	set(OPENSSL_USE_STATIC_LIBS ON)
+	set(LIBSSH2_USE_STATIC_LIBS ON)
 	set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".lib")
+
+	if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+		# need to define LIBSSH2_API as empty, otherwise dll import is assumed
+		target_compile_definitions("${PROJECT_NAME}"
+			PRIVATE
+				LIBSSH2_API=
+			)
+	endif ()
 endif ()
 
 find_package(Threads REQUIRED)
@@ -158,12 +185,22 @@ if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
 	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
 	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{LIBSSH2_DIR}")
 else ()
-	find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2)
-	find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h)
+	find_package(libssh2 QUIET)
 
-	target_link_libraries("${PROJECT_NAME}"
-		PRIVATE "${LIBSSH2_LIBRARY}")
+	if (libssh2_FOUND)
+		target_link_libraries("${PROJECT_NAME}"
+			PRIVATE
+				libssh2::libssh2)
+	else ()
+		find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2 REQUIRED)
+		find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
 
-	target_include_directories("${PROJECT_NAME}"
-		PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+		message(STATUS "Found libssh2 ${LIBSSH2_LIBRARY}")
+
+		target_link_libraries("${PROJECT_NAME}"
+			PRIVATE "${LIBSSH2_LIBRARY}")
+
+		target_include_directories("${PROJECT_NAME}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+	endif ()
 endif ()

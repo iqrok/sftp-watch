@@ -40,46 +40,21 @@ static void conv_stat_attrs(LIBSSH2_SFTP_ATTRIBUTES* attrs, struct stat* st)
 {
 	attrs->flags = 0;
 
-	attrs->filesize = (libssh2_uint64_t)st->st_size;
-	attrs->flags |= (libssh2_uint64_t)st->st_size;
+	attrs->filesize = static_cast<libssh2_uint64_t>(st->st_size);
+	attrs->flags |= static_cast<libssh2_uint64_t>(st->st_size);
 
-	attrs->uid = (unsigned long)st->st_uid;
-	attrs->gid = (unsigned long)st->st_gid;
+	attrs->uid = static_cast<unsigned long>(st->st_uid);
+	attrs->gid = static_cast<unsigned long>(st->st_gid);
 	attrs->flags |= LIBSSH2_SFTP_ATTR_UIDGID;
 
-	attrs->permissions = (unsigned long)st->st_mode;
+	attrs->permissions = static_cast<unsigned long>(st->st_mode);
 	attrs->flags |= LIBSSH2_SFTP_ATTR_PERMISSIONS;
 
-	attrs->atime = (libssh2_uint64_t)st->st_atime;
-	attrs->mtime = (libssh2_uint64_t)st->st_mtime;
+	attrs->atime = static_cast<libssh2_uint64_t>(st->st_atime);
+	attrs->mtime = static_cast<libssh2_uint64_t>(st->st_mtime);
 	attrs->flags |= LIBSSH2_SFTP_ATTR_ACMODTIME;
 }
 
-}
-
-uint8_t SftpLocal::get_filetype(DirItem_t* file)
-{
-	if (file->attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
-		if (LIBSSH2_SFTP_S_ISREG(file->attrs.permissions)) {
-			return IS_REG_FILE;
-		} else if (LIBSSH2_SFTP_S_ISDIR(file->attrs.permissions)) {
-			return IS_DIR;
-		} else if (LIBSSH2_SFTP_S_ISLNK(file->attrs.permissions)) {
-			return IS_SYMLINK;
-		} else if (LIBSSH2_SFTP_S_ISCHR(file->attrs.permissions)) {
-			return IS_CHR_FILE;
-		} else if (LIBSSH2_SFTP_S_ISBLK(file->attrs.permissions)) {
-			return IS_BLK_FILE;
-		} else if (LIBSSH2_SFTP_S_ISFIFO(file->attrs.permissions)) {
-			return IS_PIPE;
-		} else if (LIBSSH2_SFTP_S_ISSOCK(file->attrs.permissions)) {
-			return IS_SOCK;
-		} else {
-			return IS_INVALID;
-		}
-	} else {
-		return IS_INVALID;
-	}
 }
 
 int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
@@ -226,7 +201,7 @@ int32_t SftpLocal::read_dir(Directory_t& dir, DirItem_t* file)
 
 	conv_stat_attrs(&file->attrs, &st);
 
-	file->type = SftpLocal::get_filetype(file);
+	file->type = SftpWatch::get_filetype(file);
 	file->name = dir.rela.empty() ? name : dir.rela + SNOD_SEP + name;
 
 	return 1;
@@ -257,8 +232,8 @@ int32_t SftpLocal::mkdir(SftpWatch_t* ctx, DirItem_t* file)
 	int32_t     rc = 0;
 
 	struct utimbuf times = {
-		.actime  = (time_t)file->attrs.atime,
-		.modtime = (time_t)file->attrs.mtime,
+		.actime  = static_cast<time_t>(file->attrs.atime),
+		.modtime = static_cast<time_t>(file->attrs.mtime),
 	};
 
 	// check if path exists

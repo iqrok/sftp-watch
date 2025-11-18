@@ -1,0 +1,346 @@
+#include "sftp_node_api.hpp"
+
+void SftpNode::sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
+{
+	SftpNode* node_ctx = static_cast<SftpNode*>(data);
+
+	SftpWatch::disconnect(ctx);
+	node_ctx->cleanup(env);
+}
+
+void SftpNode::sync_dir_tsfn_cb(
+	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
+{
+	Napi::Object obj = Napi::Object::New(env);
+
+	EvtFile_t* ev = node_ctx->get_file_event();
+
+	switch (ev->ev) {
+
+	case EVT_FILE_RDEL: {
+		obj.Set("evt", Napi::String::New(env, "delR"));
+	} break;
+
+	case EVT_FILE_LDEL: {
+		obj.Set("evt", Napi::String::New(env, "delL"));
+	} break;
+
+	case EVT_FILE_UP: {
+		obj.Set("evt", Napi::String::New(env, "up"));
+	} break;
+
+	case EVT_FILE_DOWN: {
+		obj.Set("evt", Napi::String::New(env, "down"));
+	} break;
+
+	default: {
+	} break;
+	}
+
+	obj.Set("status", Napi::Boolean::New(env, ev->status));
+	obj.Set("name", Napi::String::New(env, ev->file->name));
+	obj.Set("type", Napi::String::New(env, SNOD_CHR2STR(ev->file->type)));
+	obj.Set("size", Napi::Number::New(env, ev->file->attrs.filesize));
+	obj.Set("time", Napi::Number::New(env, SNOD_SEC2MS(ev->file->attrs.mtime)));
+	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(ev->file->attrs)));
+
+	// don't forget to delete the data, since we used dynamic allocation
+	node_ctx->delete_file_event();
+
+	js_cb.Call({ obj });
+
+	// release the lock
+	node_ctx->sem.release();
+}
+
+void SftpNode::sync_dir_js_call(SftpWatch_t* ctx, UserData_t data,
+	DirItem_t* file, bool status, EventFile_t ev)
+{
+	(void)ctx;
+
+	SftpNode* node_ctx = static_cast<SftpNode*>(data);
+
+	// need to use heap, avoiding data lost when race condition occurs
+	node_ctx->set_file_event(ev, status, file);
+
+	// BlockingCall() should never fail, since max queue size is 0
+	if (node_ctx->tsfn.BlockingCall(node_ctx, sync_dir_tsfn_cb) != napi_ok) {
+		Napi::Error::Fatal("new file err", "BlockingCall() failed");
+	}
+
+	// wait until the BlockingCall is finished
+	node_ctx->sem.acquire();
+}
+
+void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
+{
+	(void)ctx;
+	SftpNode* node_ctx = static_cast<SftpNode*>(data);
+	node_ctx->tsfn.Release();
+}
+
+SftpNode::SftpNode(const Napi::CallbackInfo& info)
+	: Napi::ObjectWrap<SftpNode>(info)
+	, sem(0) // semaphore is initially locked
+	, deferred(Napi::Promise::Deferred::New(info.Env()))
+{
+	Napi::Env env = info.Env();
+
+	if (info.Length() < 1 || !info[0].IsObject()) {
+		Napi::TypeError::New(env, "Expected an object")
+			.ThrowAsJavaScriptException();
+	}
+
+	Napi::Object arg = info[0].As<Napi::Object>();
+
+	Directory_t remote_dir;
+	Directory_t local_dir;
+	std::string host;
+	std::string username;
+	std::string pubkey;
+	std::string privkey;
+	std::string password;
+
+	// ------------------- Mandatory properties --------------------------------
+	if (arg.Has("host")) {
+		if (!arg.Get("host").IsString() || arg.Get("host").IsEmpty()) {
+			Napi::TypeError::New(env, "'host' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		host = arg.Get("host").As<Napi::String>().Utf8Value();
+	} else {
+		Napi::TypeError::New(env, "'host' is undefined")
+			.ThrowAsJavaScriptException();
+	}
+
+	if (arg.Has("username")) {
+		if (!arg.Get("username").IsString() || arg.Get("username").IsEmpty()) {
+			Napi::TypeError::New(env, "'username' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		username = arg.Get("username").As<Napi::String>().Utf8Value();
+	} else {
+		Napi::TypeError::New(env, "'username' is undefined")
+			.ThrowAsJavaScriptException();
+	}
+
+	if (arg.Has("remotePath")) {
+		if (!arg.Get("remotePath").IsString()
+			|| arg.Get("remotePath").IsEmpty()) {
+			Napi::TypeError::New(env, "'remotePath' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		remote_dir.path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
+	} else {
+		Napi::TypeError::New(env, "'remotePath' is undefined")
+			.ThrowAsJavaScriptException();
+	}
+
+	if (arg.Has("localPath")) {
+		if (!arg.Get("localPath").IsString()
+			|| arg.Get("localPath").IsEmpty()) {
+			Napi::TypeError::New(env, "'localPath' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		local_dir.path = arg.Get("localPath").As<Napi::String>().Utf8Value();
+	}
+
+	// ------------------------ Auth properties --------------------------------
+	if (arg.Has("pubkey")) {
+		if (!arg.Get("pubkey").IsString() || arg.Get("pubkey").IsEmpty()) {
+			Napi::TypeError::New(env, "'pubkey' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		pubkey = arg.Get("pubkey").As<Napi::String>().Utf8Value();
+	}
+
+	if (arg.Has("privkey")) {
+		if (!arg.Get("privkey").IsString() || arg.Get("privkey").IsEmpty()) {
+			Napi::TypeError::New(env, "'privkey' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		privkey = arg.Get("privkey").As<Napi::String>().Utf8Value();
+	}
+
+	if (arg.Has("password")) {
+		if (!arg.Get("password").IsString() || arg.Get("password").IsEmpty()) {
+			Napi::TypeError::New(env, "'password' is empty")
+				.ThrowAsJavaScriptException();
+		}
+
+		password = arg.Get("password").As<Napi::String>().Utf8Value();
+	}
+
+	if ((pubkey.empty() || privkey.empty()) && password.empty()) {
+		Napi::TypeError::New(env, "invalid auth").ThrowAsJavaScriptException();
+	}
+
+	// ------------------------ Init context -----------------------------------
+	SftpWatch_t* ctx
+		= new SftpWatch_t(host, username, pubkey, privkey, password, remote_dir,
+			local_dir, SftpNode::sync_dir_js_call, SftpNode::thread_cleanup);
+
+	SftpWatch::set_user_data(ctx, static_cast<UserData_t>(this));
+
+	// -------------------- Optional properties --------------------------------
+	if (arg.Has("port")) {
+		uint32_t tmp = arg.Get("port").As<Napi::Number>().Uint32Value();
+		ctx->port    = static_cast<uint16_t>(tmp);
+	}
+
+	if (arg.Has("delayMs")) {
+		uint32_t tmp = arg.Get("delayMs").As<Napi::Number>().Uint32Value();
+		if (tmp > 0) ctx->delay_ms = tmp;
+	}
+
+	if (arg.Has("timeout")) {
+		uint32_t tmp = arg.Get("timeout").As<Napi::Number>().Uint32Value();
+		if (tmp > 0) ctx->timeout_sec = static_cast<uint16_t>(tmp);
+	}
+
+	if (arg.Has("maxErrCount")) {
+		uint32_t tmp = arg.Get("maxErrCount").As<Napi::Number>().Uint32Value();
+		ctx->max_err_count = static_cast<uint8_t>(tmp);
+	}
+
+	if (arg.Has("useKeyboard")) {
+		ctx->use_keyboard = arg.Get("useKeyboard").As<Napi::Boolean>().Value();
+	}
+
+	this->ctx = ctx;
+}
+
+EvtFile_t* SftpNode::set_file_event(
+	EventFile_t& ev, bool& status, DirItem_t* file)
+{
+	this->ev_file         = new EvtFile_t;
+	this->ev_file->ev     = ev;
+	this->ev_file->status = status;
+	this->ev_file->file   = file;
+
+	return this->ev_file;
+}
+
+EvtFile_t* SftpNode::get_file_event()
+{
+	return this->ev_file;
+}
+
+void SftpNode::delete_file_event()
+{
+	delete this->ev_file;
+}
+
+SftpWatch_t* SftpNode::get_watch_ctx()
+{
+	if (this->ctx) return this->ctx;
+	return nullptr;
+}
+
+void SftpNode::cleanup(Napi::Env env)
+{
+	this->ctx->thread.join();
+
+	this->deferred.Resolve(Napi::String::New(env, this->ctx->host));
+	this->is_resolved = true;
+
+	// FIXME: Restart after cleaning up
+	SftpWatch::clear(this->ctx);
+
+	//~ delete this->ctx;
+	//~ this->ctx = nullptr;
+}
+
+Napi::Value SftpNode::connect(const Napi::CallbackInfo& info)
+{
+	Napi::Env env         = info.Env();
+	uint32_t  max_attempt = 0;
+
+	if (info[0].IsNumber()) {
+		max_attempt = info[0].As<Napi::Number>().Uint32Value();
+	}
+
+	for (uint32_t i = 0; i < max_attempt || max_attempt == 0; i++) {
+		if (!SftpWatch::connect_or_reconnect(this->ctx)) {
+			return Napi::Boolean::New(env, true);
+		}
+	}
+
+	return Napi::Boolean::New(env, false);
+}
+
+Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	if (info.Length() < 1) {
+		Napi::TypeError::New(env, "Invalid params. Should be <callback>")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[0].IsFunction()) {
+		Napi::TypeError::New(env, "Invalid Callback Function")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	Napi::Function js_cb = info[0].As<Napi::Function>();
+
+	if (this->is_resolved) {
+		this->deferred    = Napi::Promise::Deferred::New(env);
+		this->is_resolved = false;
+	}
+
+	SftpWatch_t* ctx = this->ctx;
+
+	this->tsfn = Napi::ThreadSafeFunction::New(env, // Environment
+		js_cb,                                      // JS function from caller
+		std::string("sftp_") + ctx->host + "_"
+			+ std::to_string(ctx->port),            // Resource name
+		0,                            // Max queue_si size (0 = unlimited).
+		1,                            // Initial thread count
+		ctx,                          // Context,
+		SftpNode::sync_dir_finalizer, // Finalizer
+		this                          // Finalizer data
+	);
+
+	SftpWatch::start(ctx);
+
+	return this->deferred.Promise();
+}
+
+Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	SftpWatch::request_stop(this->ctx);
+
+	return env.Undefined();
+}
+
+Napi::Function SftpNode::init_node(Napi::Env env)
+{
+	std::initializer_list<Napi::ClassPropertyDescriptor<SftpNode>> properties
+		= {
+			  SftpNode::InstanceMethod("connect", &SftpNode::connect),
+			  SftpNode::InstanceMethod("sync", &SftpNode::sync_start),
+			  SftpNode::InstanceMethod("stop", &SftpNode::sync_stop),
+		  };
+
+	return SftpNode::DefineClass(env, "SftpNode", properties);
+}
+
+Napi::Object init_napi(Napi::Env env, Napi::Object exports)
+{
+	exports.Set("SftpWatch", SftpNode::init_node(env));
+	return exports;
+}
+
+NODE_API_MODULE(NODE_GYP_MODULE_NAME, init_napi);

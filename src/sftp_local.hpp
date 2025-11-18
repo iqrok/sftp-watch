@@ -1,13 +1,12 @@
 #ifndef _SFTP_LOCAL_HPP
 #define _SFTP_LOCAL_HPP
 
-#include "sftp_node.hpp"
+#include "sftp_watch.hpp"
 
 #include <cstdint>
 
 namespace SftpLocal {
 
-uint8_t get_filetype(DirItem_t* file);
 int32_t filestat(
 	SftpWatch_t* ctx, std::string& path, LIBSSH2_SFTP_ATTRIBUTES* res);
 

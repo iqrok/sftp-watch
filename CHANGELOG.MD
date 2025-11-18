@@ -1,5 +1,11 @@
 # CHAGELOG
 
+## 0.4.0
+
+- change into a class. The lifetime of the object is managed by Node API
+- Fixed memory leak on disconnection
+- Fixed conflict resolution when base is still empty
+
 ## 0.3.0
 
 - 2-way synchronization between remote and local
