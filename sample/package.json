@@ -1,0 +1,8 @@
+{
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"@types/node": "^24.10.1",
+		"@iqrok/sftp-watch": "file:.."
+	}
+}

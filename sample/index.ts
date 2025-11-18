@@ -1,10 +1,18 @@
 import fs from 'node:fs';
 import SftpWatch from '@iqrok/sftp-watch';
+import type { FileInfo } from '@iqrok/sftp-watch';
 
 import config from './config.json' with { type: "json" };
 
 // overwrite localPath to use sample/test directory
 config.localPath = import.meta.dirname + '/test';
+
+if (process.argv.length > 2) {
+	if (fs.existsSync(config.localPath)) {
+		console.log("Delete local path")
+		fs.rmSync(config.localPath, { recursive: true, });
+	}
+}
 
 if (!fs.existsSync(config.localPath)) fs.mkdirSync(config.localPath);
 
@@ -63,7 +71,7 @@ if (!sftp.connect()) {
 let sync = sftp.sync(syncCb);
 
 process.on('SIGINT', async () => {
-		console.log('\nSTOPPING');
+		console.log('\nSTOPPING', i);
 
 		// request stop
 		sftp.stop();

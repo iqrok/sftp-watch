@@ -1,11 +1,11 @@
-const SftpWatch = require('..');
+import * as fs from 'node:fs';
+import SftpWatch from '@iqrok/sftp-watch';
 
-const config = require('./config.json');
+import config from './config.json' with { type: "json" };
 
 // overwrite localPath to use sample/test directory
-config.localPath = __dirname + '/test';
+config.localPath = import.meta.dirname + '/test';
 
-const fs = require('fs');
 if (process.argv.length > 2) {
 	if (fs.existsSync(config.localPath)) {
 		console.log("Delete local path")
@@ -70,7 +70,7 @@ if (!sftp.connect()) {
 let sync = sftp.sync(syncCb);
 
 process.on('SIGINT', async () => {
-		console.log('\nSTOPPING');
+		console.log('\nSTOPPING', i);
 
 		// request stop
 		sftp.stop();
