@@ -508,13 +508,17 @@ int32_t SftpWatch::set_user_data(SftpWatch_t* ctx, UserData_t data)
 
 int32_t SftpWatch::connect_or_reconnect(SftpWatch_t* ctx)
 {
-	SftpWatch::disconnect(ctx);
+	SftpRemote::disconnect(ctx);
 
-	if (SftpRemote::connect(ctx)) return -1;
+	if (SftpRemote::connect(ctx)) {
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return -1;
+	}
 
-	ctx->is_connected = true;
-
-	if (SftpRemote::auth(ctx)) return -2;
+	if (SftpRemote::auth(ctx)) {
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return -2;
+	}
 
 	return 0;
 }
@@ -532,8 +536,7 @@ void SftpWatch::request_stop(SftpWatch_t* ctx)
 
 void SftpWatch::disconnect(SftpWatch_t* ctx)
 {
-	if (ctx->is_connected) SftpRemote::disconnect(ctx);
-	ctx->is_connected = false;
+	SftpRemote::disconnect(ctx);
 }
 
 void SftpWatch::clear(SftpWatch_t* ctx)
