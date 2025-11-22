@@ -50,6 +50,7 @@ endif ()
 add_library("${PROJECT_NAME}"
 	SHARED
 		${CMAKE_JS_SRC}
+		"${SRC_DIR}/sftp_err.cc"
 		"${SRC_DIR}/sftp_local.cc"
 		"${SRC_DIR}/sftp_remote.cc"
 		"${SRC_DIR}/sftp_watch.cc"

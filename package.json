@@ -25,6 +25,7 @@
 		"rebuild:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1 -D CMAKE_BUILD_TYPE=Release",
 		"rebuild:dbg": "cmake-js rebuild -D CMAKE_BUILD_TYPE=Debug",
 		"rebuild": "cmake-js rebuild",
+		"build": "cmake-js build",
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
 		"postinstall": "npm run compile"
