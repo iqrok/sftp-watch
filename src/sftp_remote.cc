@@ -27,6 +27,7 @@
 #endif
 
 #include "debug.hpp"
+#include "sftp_err.hpp"
 #include "sftp_local.hpp"
 #include "sftp_remote.hpp"
 
@@ -60,6 +61,17 @@ enum RemoteOpenDirection_e {
 };
 
 static bool is_inited = false; /**< Whether libssh2 is initialized or nor */
+
+static void prv_remote_error(SftpWatch_t* ctx);
+static void prv_remote_error(SftpWatch_t* ctx, int32_t rc, const char* msg);
+static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session);
+static int32_t prv_auth_password(SftpWatch_t* ctx);
+static LIBSSH2_SFTP_HANDLE* prv_open_file(
+	SftpWatch_t* ctx, const char* remote_path, uint8_t direction, long mode);
+static void kbd_callback(const char* name, int name_len,
+	const char* instruction, int instruction_len, int num_prompts,
+	const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+	LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract);
 
 // Straight copied from example/sftp_RW_nonblock.c
 static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session)
@@ -133,6 +145,7 @@ static int32_t prv_auth_password(SftpWatch_t* ctx)
 	}
 
 	if (rc) {
+		prv_remote_error(ctx);
 		LOG_ERR("Authentication by password failed %d [%s].\n", rc,
 			ctx->username.c_str());
 	}
@@ -152,6 +165,7 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 
 		if (!handle) {
 			if (FN_LAST_ERRNO_ERROR(ctx->session)) {
+				prv_remote_error(ctx);
 				LOG_ERR("Unable to open file '%s' with SFTP: %ld\n",
 					remote_path, libssh2_sftp_last_error(ctx->sftp_session));
 				break;
@@ -163,6 +177,7 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 	} while (!handle);
 
 	if (!handle) {
+		prv_remote_error(ctx);
 		LOG_ERR("Unable to open file '%s' with SFTP: %ld\n", remote_path,
 			libssh2_sftp_last_error(ctx->sftp_session));
 		return NULL;
@@ -171,10 +186,46 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 	return handle;
 }
 
+static void prv_remote_error(SftpWatch_t* ctx)
+{
+	prv_remote_error(ctx, 0, nullptr);
+}
+
+static void prv_remote_error(SftpWatch_t* ctx, int32_t rc, const char* msg)
+{
+	if (rc && msg) {
+		ctx->last_error.type = ERR_FROM_CUSTOM;
+		ctx->last_error.code = rc;
+		ctx->last_error.msg  = msg;
+		return;
+	}
+
+	int32_t sftp_code = libssh2_sftp_last_error(ctx->sftp_session);
+
+	if (sftp_code != LIBSSH2_ERROR_NONE) {
+		ctx->last_error.type = ERR_FROM_SFTP;
+		ctx->last_error.code = sftp_code;
+		ctx->last_error.msg  = SftpErr::sftp_error(sftp_code);
+		return;
+	}
+
+	if (libssh2_session_last_errno(ctx->session) == LIBSSH2_ERROR_NONE) return;
+
+	char*   sess_msg;
+	int32_t sess_code
+		= libssh2_session_last_error(ctx->session, &sess_msg, NULL, 0);
+
+	ctx->last_error.type = ERR_FROM_SESSION;
+	ctx->last_error.code = sess_code;
+	ctx->last_error.msg  = sess_msg;
+}
+
 } // end of unnamed namespace for static function
 
 int32_t SftpRemote::connect(SftpWatch_t* ctx)
 {
+	if (ctx->status >= SNOD_CONNECTED) return 0;
+
 	int32_t rc;
 
 	if (!is_inited) {
@@ -183,11 +234,13 @@ int32_t SftpRemote::connect(SftpWatch_t* ctx)
 
 		rc = WSAStartup(MAKEWORD(2, 0), &wsadata);
 		if (rc) {
-			LOG_ERR("WSAStartup failed with error: %d\n", rc);
+			prv_remote_error(ctx, rc, "WSAStartup failed");
+			LOG_ERR("WSAStartup failed %d\n", rc);
 			return 1;
 		}
 #endif
 		if ((rc = libssh2_init(0)) != 0) {
+			prv_remote_error(ctx, rc, "libssh2 initialization failed");
 			LOG_ERR("libssh2 initialization failed (%d)\n", rc);
 			return -127;
 		}
@@ -203,27 +256,35 @@ int32_t SftpRemote::connect(SftpWatch_t* ctx)
 	hints.ai_family   = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 
+	errno = 0;
 	rc = getaddrinfo(
 		ctx->host.c_str(), std::to_string(ctx->port).c_str(), &hints, &res);
 	if (rc != 0 || !res) {
+		SftpLocal::set_error(ctx);
 		LOG_ERR("FAILED getaddrinfo %d %d\n", rc, errno);
 		if (res) freeaddrinfo(res);
 
 		return -1;
 	}
 
+	errno = 0;
 	ctx->sock = socket(res->ai_family, res->ai_socktype, 0);
 	if (ctx->sock == LIBSSH2_INVALID_SOCKET) {
-		LOG_ERR("failed to create socket.\n");
 		freeaddrinfo(res);
+
+		SftpLocal::set_error(ctx);
+		LOG_ERR("failed to create socket.\n");
 
 		return -1;
 	}
 
+	errno = 0;
 	if ((rc = connect(ctx->sock, res->ai_addr, res->ai_addrlen))) {
+		freeaddrinfo(res);
+
+		SftpLocal::set_error(ctx);
 		LOG_ERR("failed to connect. (%d) [%s:%u]\n", rc, ctx->host.c_str(),
 			ctx->port);
-		freeaddrinfo(res);
 
 		return rc;
 	}
@@ -237,6 +298,7 @@ int32_t SftpRemote::connect(SftpWatch_t* ctx)
 	 * */
 	ctx->session = libssh2_session_init_ex(NULL, NULL, NULL, ctx);
 	if (!ctx->session) {
+		prv_remote_error(ctx);
 		LOG_ERR("Could not initialize SSH session.\n");
 		return -1;
 	}
@@ -250,6 +312,7 @@ int32_t SftpRemote::connect(SftpWatch_t* ctx)
 		FN_RC_EAGAIN(rc, libssh2_session_handshake(ctx->session, ctx->sock)));
 
 	if (rc) {
+		prv_remote_error(ctx);
 		LOG_ERR("Failure establishing SSH session: %d\n", rc);
 		return -1;
 	}
@@ -260,11 +323,15 @@ int32_t SftpRemote::connect(SftpWatch_t* ctx)
 		LOG_DBG_FINGERPRINT(ctx->fingerprint);
 	}
 
+	ctx->status = SNOD_CONNECTED;
+
 	return 0;
 }
 
 int32_t SftpRemote::auth(SftpWatch_t* ctx)
 {
+	if (ctx->status >= SNOD_AUTHENTICATED) return 0;
+
 	int32_t rc;
 
 	/*
@@ -287,22 +354,25 @@ int32_t SftpRemote::auth(SftpWatch_t* ctx)
 				ctx->privkey.c_str(), ctx->password.c_str())));
 
 		if (rc) {
-			char*   errmsg;
-			int32_t errcode
-				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
+			prv_remote_error(ctx, rc, nullptr);
+			//~ char*   errmsg;
+			//~ int32_t errcode
+				//~ = libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			LOG_ERR("Authentication by public key failed [%d] %s\n", errcode,
-				errmsg ? errmsg : "Unknown error message");
+			//~ LOG_ERR("Authentication by public key failed [%d] %s\n", errcode,
+				//~ errmsg ? errmsg : "Unknown error message");
 			return -1;
 		}
 	} else if (!ctx->password.empty()) {
 		rc = prv_auth_password(ctx);
 		if (rc) {
+			prv_remote_error(ctx);
 			LOG_ERR("Authentication by password failed %d [%s].\n", rc,
 				ctx->username.c_str());
 			return -1;
 		}
 	} else {
+		prv_remote_error(ctx, -80, "No Valid Authentication is provided");
 		LOG_ERR("No Valid Authentication is provided.\n");
 		return -2;
 	}
@@ -311,10 +381,13 @@ int32_t SftpRemote::auth(SftpWatch_t* ctx)
 		ctx->sftp_session = libssh2_sftp_init(ctx->session);
 
 		if (!ctx->sftp_session && FN_LAST_ERRNO_ERROR(ctx->session)) {
+			prv_remote_error(ctx);
 			LOG_ERR("Unable to init SFTP session\n");
 			return -3;
 		}
 	} while (!ctx->sftp_session);
+
+	ctx->status = SNOD_AUTHENTICATED;
 
 	return 0;
 }
@@ -328,11 +401,12 @@ int32_t SftpRemote::close_dir(SftpWatch_t* ctx, Directory_t* dir)
 	while (FN_RC_EAGAIN(rc, libssh2_sftp_closedir(dir->handle)));
 
 	if (rc) {
-		int32_t errcode = libssh2_sftp_last_error(ctx->sftp_session);
+		prv_remote_error(ctx);
+		//~ int32_t errcode = libssh2_sftp_last_error(ctx->sftp_session);
 
-		LOG_ERR("Failed to close dir '%s' [%d]\n", dir->path.c_str(), errcode);
+		//~ LOG_ERR("Failed to close dir '%s' [%d]\n", dir->path.c_str(), errcode);
 
-		return errcode;
+		return ctx->last_error.code;
 	}
 
 	dir->is_opened = false;
@@ -349,16 +423,18 @@ int32_t SftpRemote::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 			= libssh2_sftp_opendir(ctx->sftp_session, dir->path.c_str());
 
 		if (!dir->handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			char*   errmsg;
-			int32_t errcode
-				= libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
+			//~ char*   errmsg;
+			//~ int32_t errcode
+				//~ = libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
 
-			LOG_ERR("Unable to open dir '%s' '%s' with SFTP [%d] %s\n",
-				dir->path.c_str(), dir->rela.c_str(), errcode,
-				errmsg ? errmsg : "Unknown error message");
+			//~ LOG_ERR("Unable to open dir '%s' '%s' with SFTP [%d] %s\n",
+				//~ dir->path.c_str(), dir->rela.c_str(), errcode,
+				//~ errmsg ? errmsg : "Unknown error message");
 
-			// return the errno detail from sftp session
-			return libssh2_sftp_last_error(ctx->sftp_session);
+			//~ // return the errno detail from sftp session
+			//~ return libssh2_sftp_last_error(ctx->sftp_session);
+			prv_remote_error(ctx);
+			return -1;
 		}
 	} while (!dir->handle);
 
@@ -403,10 +479,16 @@ int32_t SftpRemote::read_dir(Directory_t& dir, DirItem_t* file)
 
 void SftpRemote::disconnect(SftpWatch_t* ctx)
 {
+	if (ctx->status == SNOD_DISCONNECTED) return;
+
 	int32_t rc = 0;
 
-	while (FN_RC_EAGAIN(rc, libssh2_sftp_shutdown(ctx->sftp_session))) {
-		waitsocket(ctx->sock, ctx->session);
+	if (ctx->sftp_session) {
+		while (FN_RC_EAGAIN(rc, libssh2_sftp_shutdown(ctx->sftp_session))) {
+			waitsocket(ctx->sock, ctx->session);
+		}
+
+		ctx->sftp_session = nullptr;
 	}
 
 	if (ctx->session) {
@@ -418,6 +500,8 @@ void SftpRemote::disconnect(SftpWatch_t* ctx)
 		while (FN_RC_EAGAIN(rc, libssh2_session_free(ctx->session))) {
 			waitsocket(ctx->sock, ctx->session);
 		}
+
+		ctx->sftp_session = nullptr;
 	}
 
 	if (ctx->sock != LIBSSH2_INVALID_SOCKET) {
@@ -425,6 +509,8 @@ void SftpRemote::disconnect(SftpWatch_t* ctx)
 		::shutdown(ctx->sock, SHUT_RDWR);
 		LIBSSH2_SOCKET_CLOSE(ctx->sock);
 	}
+
+	ctx->status = SNOD_DISCONNECTED;
 }
 
 void SftpRemote::shutdown()
@@ -456,6 +542,7 @@ int32_t SftpRemote::down_symlink(SftpWatch_t* ctx, DirItem_t* file)
 			ctx->sftp_session, remote_file.c_str(), mem, sizeof(mem))));
 
 	if (rc < 0) {
+		prv_remote_error(ctx);
 		LOG_ERR("Unable to open file '%s' with SFTP: %ld\n",
 			remote_file.c_str(), libssh2_sftp_last_error(ctx->sftp_session));
 		return rc;
@@ -469,6 +556,7 @@ int32_t SftpRemote::down_symlink(SftpWatch_t* ctx, DirItem_t* file)
 	}
 
 	if ((rc = symlink(mem, local_file.c_str()))) {
+		SftpLocal::set_error(ctx);
 		LOG_ERR("Failed to create symlink '%s' with SFTP: %d\n",
 			local_file.c_str(), rc);
 		perror("SYMLINK FAILED");
@@ -503,6 +591,7 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 	FILE* fd_local = fopen(local_file.c_str(), "rb");
 
 	if (!fd_local) {
+		SftpLocal::set_error(ctx);
 		LOG_ERR("Error opening file '%s'!\n", local_file.c_str());
 		return -2;
 	}
@@ -532,10 +621,12 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 				int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
 				if (wait_rc == 0) {
 					rc = LIBSSH2_ERROR_TIMEOUT;
+					SftpLocal::set_error(ctx);
 					LOG_ERR("SFTP upload timed out: %d\n", rc);
 					break;
 				} else if (wait_rc < 0) {
 					rc = errno;
+					SftpLocal::set_error(ctx);
 					LOG_ERR("SFTP upload error: %d\n", rc);
 					break;
 				} else {
@@ -587,6 +678,7 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 	FILE* fd_local = fopen(local_file.c_str(), "wb");
 
 	if (!fd_local) {
+		SftpLocal::set_error(ctx);
 		LOG_ERR("Error opening file '%s'!\n", local_file.c_str());
 		return -2;
 	}
@@ -612,13 +704,16 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		}
 
 		// negative is error, 0 is timeout
+		errno = 0;
 		int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
 		if (wait_rc == 0) {
 			rc = LIBSSH2_ERROR_TIMEOUT;
+			SftpLocal::set_error(ctx);
 			LOG_ERR("SFTP download timed out: %d\n", rc);
 			break;
 		} else if (wait_rc < 0) {
 			rc = errno;
+			SftpLocal::set_error(ctx);
 			LOG_ERR("SFTP download error: %d\n", rc);
 			break;
 		} else {
@@ -645,12 +740,14 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 
 	// set modified & access time time to match remote
 	if (utime(local_file.c_str(), &times)) {
+		SftpLocal::set_error(ctx);
 		LOG_ERR("Failed to set mtime [%d]\n", errno);
 	}
 
 #ifdef _POSIX_VERSION
 	// set file attribute to match remote. non-windows only
 	if (chmod(local_file.c_str(), SNOD_FILE_PERM(file->attrs))) {
+		SftpLocal::set_error(ctx);
 		LOG_ERR("Failed to set attributes: %d\n", errno);
 	}
 #endif

@@ -57,6 +57,25 @@ static void conv_stat_attrs(LIBSSH2_SFTP_ATTRIBUTES* attrs, struct stat* st)
 
 }
 
+void SftpLocal::set_error(SftpWatch_t* ctx)
+{
+	SftpLocal::set_error(ctx, 0, nullptr);
+}
+
+void SftpLocal::set_error(SftpWatch_t* ctx, int32_t rc, const char* msg)
+{
+	if (rc && msg) {
+		ctx->last_error.type = ERR_FROM_CUSTOM;
+		ctx->last_error.code = rc;
+		ctx->last_error.msg  = msg;
+		return;
+	}
+
+	ctx->last_error.type = ERR_FROM_LOCAL;
+	ctx->last_error.code = errno;
+	ctx->last_error.msg  = strerror(errno);
+}
+
 int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 {
 	if (dir->is_opened) SftpLocal::close_dir(ctx, dir);
