@@ -15,15 +15,25 @@ class SftpNode : public Napi::ObjectWrap<SftpNode> {
 public:
 	std::atomic<bool> is_resolved = false;
 
-	Napi::ThreadSafeFunction tsfn;
-	std::binary_semaphore    sem;
+	Napi::ThreadSafeFunction tsfn_sync = nullptr;
+	std::binary_semaphore    sem_sync;
+
+	Napi::ThreadSafeFunction tsfn_err = nullptr;
+	std::binary_semaphore    sem_err;
+
+	static void tsfn_sync_finalizer(
+		Napi::Env env, SftpNode* data, SftpWatch_t* ctx);
+	static void tsfn_sync_cb(
+		Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx);
+	static void tsfn_sync_js_call(SftpWatch_t* ctx, UserData_t data,
+		DirItem_t* file, bool status, EventFile_t ev);
+
+	static void tsfn_err_cb(
+		Napi::Env env, Napi::Function js_cb, SyncErr_t* error);
+	static void tsfn_err_js_call(
+		SftpWatch_t* ctx, UserData_t data, SyncErr_t* error);
 
 	static Napi::Function init_node(Napi::Env env);
-	static void sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx);
-	static void sync_dir_tsfn_cb(
-		Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx);
-	static void sync_dir_js_call(SftpWatch_t* ctx, UserData_t data,
-		DirItem_t* file, bool status, EventFile_t ev);
 	static void thread_cleanup(SftpWatch_t* ctx, UserData_t data);
 
 	SftpNode(const Napi::CallbackInfo& info);

@@ -1,6 +1,7 @@
 #include "sftp_node_api.hpp"
+#include "sftp_err.hpp"
 
-void SftpNode::sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
+void SftpNode::tsfn_sync_finalizer(Napi::Env env, SftpNode* data, SftpWatch_t* ctx)
 {
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
@@ -8,7 +9,7 @@ void SftpNode::sync_dir_finalizer(Napi::Env env, void* data, SftpWatch_t* ctx)
 	node_ctx->cleanup(env);
 }
 
-void SftpNode::sync_dir_tsfn_cb(
+void SftpNode::tsfn_sync_cb(
 	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
 {
 	Napi::Object obj = Napi::Object::New(env);
@@ -50,10 +51,10 @@ void SftpNode::sync_dir_tsfn_cb(
 	js_cb.Call({ obj });
 
 	// release the lock
-	node_ctx->sem.release();
+	node_ctx->sem_sync.release();
 }
 
-void SftpNode::sync_dir_js_call(SftpWatch_t* ctx, UserData_t data,
+void SftpNode::tsfn_sync_js_call(SftpWatch_t* ctx, UserData_t data,
 	DirItem_t* file, bool status, EventFile_t ev)
 {
 	(void)ctx;
@@ -64,24 +65,46 @@ void SftpNode::sync_dir_js_call(SftpWatch_t* ctx, UserData_t data,
 	node_ctx->set_file_event(ev, status, file);
 
 	// BlockingCall() should never fail, since max queue size is 0
-	if (node_ctx->tsfn.BlockingCall(node_ctx, sync_dir_tsfn_cb) != napi_ok) {
+	if (node_ctx->tsfn_sync.BlockingCall(node_ctx, tsfn_sync_cb)
+		!= napi_ok) {
 		Napi::Error::Fatal("new file err", "BlockingCall() failed");
 	}
 
 	// wait until the BlockingCall is finished
-	node_ctx->sem.acquire();
+	node_ctx->sem_sync.acquire();
+}
+
+void SftpNode::tsfn_err_js_call(
+	SftpWatch_t* ctx, UserData_t data, SyncErr_t* error)
+{
+	(void)ctx;
+	(void)data;
+
+	if (error->msg == nullptr) return;
+	const char* err_name = SftpErr::session_error(error->code);
+	printf("Error type %d [%d:%s] %s\n", error->type, error->code, err_name, error->msg);
+
+	//~ // BlockingCall() should never fail, since max queue size is 0
+	//~ if (node_ctx->tsfn_sync.BlockingCall(node_ctx, tsfn_sync_cb)
+		//~ != napi_ok) {
+		//~ Napi::Error::Fatal("new file err", "BlockingCall() failed");
+	//~ }
+
+	//~ // wait until the BlockingCall is finished
+	//~ node_ctx->sem_sync.acquire();
 }
 
 void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 {
 	(void)ctx;
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
-	node_ctx->tsfn.Release();
+	node_ctx->tsfn_sync.Release();
 }
 
 SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	: Napi::ObjectWrap<SftpNode>(info)
-	, sem(0) // semaphore is initially locked
+	, sem_sync(0) // semaphore is initially locked
+	, sem_err(0) // semaphore is initially locked
 	, deferred(Napi::Promise::Deferred::New(info.Env()))
 {
 	Napi::Env env = info.Env();
@@ -184,7 +207,8 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	// ------------------------ Init context -----------------------------------
 	SftpWatch_t* ctx
 		= new SftpWatch_t(host, username, pubkey, privkey, password, remote_dir,
-			local_dir, SftpNode::sync_dir_js_call, SftpNode::thread_cleanup);
+			local_dir, SftpNode::tsfn_sync_js_call, SftpNode::tsfn_err_js_call,
+			SftpNode::thread_cleanup);
 
 	SftpWatch::set_user_data(ctx, static_cast<UserData_t>(this));
 
@@ -300,15 +324,15 @@ Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 
 	SftpWatch_t* ctx = this->ctx;
 
-	this->tsfn = Napi::ThreadSafeFunction::New(env, // Environment
-		js_cb,                                      // JS function from caller
-		std::string("sftp_") + ctx->host + "_"
-			+ std::to_string(ctx->port),            // Resource name
-		0,                            // Max queue_si size (0 = unlimited).
-		1,                            // Initial thread count
-		ctx,                          // Context,
-		SftpNode::sync_dir_finalizer, // Finalizer
-		this                          // Finalizer data
+	this->tsfn_sync = Napi::ThreadSafeFunction::New(env, // Environment
+		js_cb,                           // JS function from caller
+		std::string("sync_") + ctx->host + ":"
+			+ std::to_string(ctx->port), // Resource name
+		0,                               // Max queue_si size (0 = unlimited).
+		1,                               // Initial thread count
+		ctx,                             // Context,
+		SftpNode::tsfn_sync_finalizer,    // Finalizer
+		this                             // Finalizer data
 	);
 
 	SftpWatch::start(ctx);
