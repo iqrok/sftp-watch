@@ -74,24 +74,54 @@ void SftpNode::tsfn_sync_js_call(SftpWatch_t* ctx, UserData_t data,
 	node_ctx->sem_sync.acquire();
 }
 
+void SftpNode::tsfn_err_cb(
+	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
+{
+	SyncErr_t* error = node_ctx->last_error;
+
+	//~ Napi::Object obj = Napi::Object::New(env);
+
+	//~ obj.Set("type", Napi::Number::New(env, error->type));
+	//~ obj.Set("code", Napi::Number::New(env, error->code));
+	//~ obj.Set("msg", Napi::String::New(env, error->msg));
+	node_ctx->obj_err.Set("type", Napi::Number::New(env, error->type));
+	node_ctx->obj_err.Set("code", Napi::Number::New(env, error->code));
+	node_ctx->obj_err.Set("msg", Napi::String::New(env, error->msg));
+
+	//~ Napi::ObjectReference ref = Napi::Persistent(obj);
+
+	//~ js_cb.Call({ obj });
+	js_cb.Call({ node_ctx->obj_err.Value() });
+	//~ BREAKPOINT();
+
+	delete error;
+
+	// release the lock
+	node_ctx->sem_err.release();
+}
+
 void SftpNode::tsfn_err_js_call(
 	SftpWatch_t* ctx, UserData_t data, SyncErr_t* error)
 {
 	(void)ctx;
-	(void)data;
 
-	if (error->msg == nullptr) return;
-	const char* err_name = SftpErr::session_error(error->code);
-	printf("Error type %d [%d:%s] %s\n", error->type, error->code, err_name, error->msg);
+	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
-	//~ // BlockingCall() should never fail, since max queue size is 0
-	//~ if (node_ctx->tsfn_sync.BlockingCall(node_ctx, tsfn_sync_cb)
-		//~ != napi_ok) {
-		//~ Napi::Error::Fatal("new file err", "BlockingCall() failed");
-	//~ }
+	//~ if (error->msg == nullptr) return;
+	//~ const char* err_name = SftpErr::session_error(error->code);
+	//~ printf("Error type %d [%d:%s] %s\n", error->type, error->code, err_name, error->msg);
 
-	//~ // wait until the BlockingCall is finished
-	//~ node_ctx->sem_sync.acquire();
+	if (!node_ctx->tsfn_err) return;
+
+	node_ctx->last_error = new SyncErr_t(error->type, error->code, error->msg);
+
+	// BlockingCall() should never fail, since max queue size is 0
+	if (node_ctx->tsfn_err.BlockingCall(node_ctx, tsfn_err_cb) != napi_ok) {
+		Napi::Error::Fatal("new file err", "BlockingCall() failed");
+	};
+
+	// wait until the BlockingCall is finished
+	node_ctx->sem_err.acquire();
 }
 
 void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
@@ -99,6 +129,7 @@ void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 	(void)ctx;
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 	node_ctx->tsfn_sync.Release();
+	if (node_ctx->tsfn_err) node_ctx->tsfn_err.Abort();
 }
 
 SftpNode::SftpNode(const Napi::CallbackInfo& info)
@@ -123,6 +154,10 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	std::string pubkey;
 	std::string privkey;
 	std::string password;
+
+	env.AddCleanupHook([](void* data){
+		printf("WOTAAAAAA..........\n");
+	}, this);
 
 	// ------------------- Mandatory properties --------------------------------
 	if (arg.Has("host")) {
@@ -237,7 +272,18 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		ctx->use_keyboard = arg.Get("useKeyboard").As<Napi::Boolean>().Value();
 	}
 
+	Napi::Object o_error = Napi::Object::New(env);
+
+	obj_err = Napi::Persistent(o_error);
+	obj_err.SuppressDestruct();
+
+	env.AddCleanupHook([](void* data){
+		printf("CLEANING UP HOOK\n");
+	}, this);
+
 	this->ctx = ctx;
+
+
 }
 
 EvtFile_t* SftpNode::set_file_event(
@@ -303,19 +349,9 @@ Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
-	if (info.Length() < 1) {
-		Napi::TypeError::New(env, "Invalid params. Should be <callback>")
-			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
+	if (!this->tsfn_sync) {
+		Napi::Error::Fatal("SyncDir", "Data Event callback is empty");
 	}
-
-	if (!info[0].IsFunction()) {
-		Napi::TypeError::New(env, "Invalid Callback Function")
-			.ThrowAsJavaScriptException();
-		return Napi::Boolean::New(env, false);
-	}
-
-	Napi::Function js_cb = info[0].As<Napi::Function>();
 
 	if (this->is_resolved) {
 		this->deferred    = Napi::Promise::Deferred::New(env);
@@ -323,18 +359,6 @@ Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 	}
 
 	SftpWatch_t* ctx = this->ctx;
-
-	this->tsfn_sync = Napi::ThreadSafeFunction::New(env, // Environment
-		js_cb,                           // JS function from caller
-		std::string("sync_") + ctx->host + ":"
-			+ std::to_string(ctx->port), // Resource name
-		0,                               // Max queue_si size (0 = unlimited).
-		1,                               // Initial thread count
-		ctx,                             // Context,
-		SftpNode::tsfn_sync_finalizer,    // Finalizer
-		this                             // Finalizer data
-	);
-
 	SftpWatch::start(ctx);
 
 	return this->deferred.Promise();
@@ -349,21 +373,96 @@ Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 	return env.Undefined();
 }
 
-Napi::Function SftpNode::init_node(Napi::Env env)
+Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	if (info.Length() < 2) {
+		Napi::TypeError::New(env, "Invalid params. Should be <event, callback>")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[0].IsString()) {
+		Napi::TypeError::New(env, "Event name must be a string")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (!info[1].IsFunction()) {
+		Napi::TypeError::New(env, "Event Callback is not a Function")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	std::string name = info[0].As<Napi::String>().Utf8Value();
+	std::string resource_name
+		= name + "_" + ctx->host + ":" + std::to_string(ctx->port);
+
+	SftpWatch_t* ctx = this->ctx;
+
+	if (name == "data") {
+		this->tsfn_sync = Napi::ThreadSafeFunction::New(env, // Environment
+			info[1].As<Napi::Function>(),    // JS function from caller
+			resource_name,                   // Resource name
+			0,                               // Max queue_si size (0 = unlimited).
+			1,                               // Initial thread count
+			ctx,                             // Context,
+			SftpNode::tsfn_sync_finalizer,   // Finalizer
+			this                             // Finalizer data
+		);
+	} else if (name == "error") {
+		this->tsfn_err = Napi::ThreadSafeFunction::New(env, // Environment
+			info[1].As<Napi::Function>(), // JS function from caller
+			resource_name,                // Resource name
+			0,                            // Max queue_si size (0 = unlimited).
+			1,                            // Initial thread count
+			ctx                           // Context,
+		);
+	} else {
+		Napi::TypeError::New(env, "Unknown Event name " + name)
+			.ThrowAsJavaScriptException();
+	}
+
+	return info.This();
+}
+
+Napi::Value SftpNode::get_error(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	SyncErr_t* error = &this->ctx->last_error;
+
+	this->obj_err.Set("type", Napi::Number::New(env, error->type));
+	this->obj_err.Set("code", Napi::Number::New(env, error->code));
+
+	if (error->code) {
+		this->obj_err.Set("msg", Napi::String::New(env, error->msg));
+	} else {
+		this->obj_err.Set("msg", Napi::String::New(env, "No Error"));
+	}
+
+	return this->obj_err.Value();
+	//~ return Napi::Number::New(env, 20);
+}
+
+Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 {
 	std::initializer_list<Napi::ClassPropertyDescriptor<SftpNode>> properties
 		= {
 			  SftpNode::InstanceMethod("connect", &SftpNode::connect),
 			  SftpNode::InstanceMethod("sync", &SftpNode::sync_start),
 			  SftpNode::InstanceMethod("stop", &SftpNode::sync_stop),
+			  SftpNode::InstanceMethod("on", &SftpNode::listen_to),
+			  SftpNode::InstanceMethod("getError", &SftpNode::get_error),
 		  };
 
-	return SftpNode::DefineClass(env, "SftpNode", properties);
-}
+	Napi::Function func = SftpNode::DefineClass(env, "SftpNode", properties);
 
-Napi::Object init_napi(Napi::Env env, Napi::Object exports)
-{
-	exports.Set("SftpWatch", SftpNode::init_node(env));
+	Napi::FunctionReference constructor = Napi::Persistent(func);
+
+	exports.Set("SftpWatch", func);
+
 	return exports;
 }
 

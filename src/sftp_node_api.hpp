@@ -13,6 +13,7 @@ typedef struct EvtFile_s {
 
 class SftpNode : public Napi::ObjectWrap<SftpNode> {
 public:
+	SyncErr_t* last_error;
 	std::atomic<bool> is_resolved = false;
 
 	Napi::ThreadSafeFunction tsfn_sync = nullptr;
@@ -20,6 +21,7 @@ public:
 
 	Napi::ThreadSafeFunction tsfn_err = nullptr;
 	std::binary_semaphore    sem_err;
+	Napi::ObjectReference    obj_err;
 
 	static void tsfn_sync_finalizer(
 		Napi::Env env, SftpNode* data, SftpWatch_t* ctx);
@@ -29,11 +31,10 @@ public:
 		DirItem_t* file, bool status, EventFile_t ev);
 
 	static void tsfn_err_cb(
-		Napi::Env env, Napi::Function js_cb, SyncErr_t* error);
+		Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx);
 	static void tsfn_err_js_call(
 		SftpWatch_t* ctx, UserData_t data, SyncErr_t* error);
 
-	static Napi::Function init_node(Napi::Env env);
 	static void thread_cleanup(SftpWatch_t* ctx, UserData_t data);
 
 	SftpNode(const Napi::CallbackInfo& info);
@@ -47,6 +48,8 @@ public:
 	Napi::Value connect(const Napi::CallbackInfo& info);
 	Napi::Value sync_start(const Napi::CallbackInfo& info);
 	Napi::Value sync_stop(const Napi::CallbackInfo& info);
+	Napi::Value listen_to(const Napi::CallbackInfo& info);
+	Napi::Value get_error(const Napi::CallbackInfo& info);
 
 private:
 	SftpWatch_t* ctx = nullptr;
