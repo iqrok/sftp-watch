@@ -119,9 +119,18 @@ typedef void (*sync_err_cb)(
 	SftpWatch_t* ctx, UserData_t data, SyncErr_t* error);
 
 struct SyncErr_s {
-	uint8_t     type;
-	int32_t     code;
-	const char* msg;
+	uint8_t     type = 0;
+	int32_t     code = 0;
+	const char* msg  = nullptr;
+
+	SyncErr_s() { }
+	SyncErr_s(uint8_t type, int32_t code, const char* msg)
+		: type(type)
+		, code(code)
+		, msg(msg)
+	{
+		// empty constructor
+	}
 };
 
 struct SyncQueue_s {
