@@ -384,19 +384,21 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 	for (auto it = que.r_new.begin(); it != que.r_new.end() && !ctx->is_stopped;
 		++it) {
 
+		int32_t rc = 0;
+
 		switch ((*it)->type) {
 
 		case IS_DIR: {
-			SftpLocal::mkdir(ctx, (*it));
+			rc = SftpLocal::mkdir(ctx, (*it));
 		} break;
 
 		case IS_SYMLINK: {
-			SftpRemote::down_symlink(ctx, *it);
+			rc = SftpRemote::down_symlink(ctx, *it);
 		} break;
 
 		case IS_REG_FILE: {
 			ctx->cb_file(ctx, ctx->user_data, (*it), false, EVT_FILE_DOWN);
-			SftpRemote::down_file(ctx, *it);
+			rc = SftpRemote::down_file(ctx, *it);
 		} break;
 
 		default: {
@@ -404,21 +406,24 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
+		if (rc) ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
 		ctx->cb_file(ctx, ctx->user_data, (*it), true, EVT_FILE_DOWN);
 	}
 
 	for (auto it = que.l_new.begin(); it != que.l_new.end() && !ctx->is_stopped;
 		++it) {
 
+		int32_t rc = 0;
+
 		switch ((*it)->type) {
 
 		case IS_REG_FILE: {
 			ctx->cb_file(ctx, ctx->user_data, (*it), false, EVT_FILE_UP);
-			SftpRemote::up_file(ctx, (*it));
+			rc = SftpRemote::up_file(ctx, (*it));
 		} break;
 
 		case IS_DIR: {
-			SftpRemote::mkdir(ctx, (*it));
+			rc = SftpRemote::mkdir(ctx, (*it));
 		} break;
 
 		default: {
@@ -426,6 +431,7 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
+		if (rc) ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
 		ctx->cb_file(ctx, ctx->user_data, (*it), true, EVT_FILE_UP);
 	}
 }
@@ -510,15 +516,9 @@ int32_t SftpWatch::connect_or_reconnect(SftpWatch_t* ctx)
 {
 	SftpRemote::disconnect(ctx);
 
-	if (SftpRemote::connect(ctx)) {
-		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
-		return -1;
-	}
+	if (SftpRemote::connect(ctx)) return -1;
 
-	if (SftpRemote::auth(ctx)) {
-		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
-		return -2;
-	}
+	if (SftpRemote::auth(ctx)) return -2;
 
 	return 0;
 }
