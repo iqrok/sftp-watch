@@ -423,16 +423,6 @@ int32_t SftpRemote::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 			= libssh2_sftp_opendir(ctx->sftp_session, dir->path.c_str());
 
 		if (!dir->handle && FN_LAST_ERRNO_ERROR(ctx->session)) {
-			//~ char*   errmsg;
-			//~ int32_t errcode
-				//~ = libssh2_session_last_error(ctx->session, &errmsg, NULL, 0);
-
-			//~ LOG_ERR("Unable to open dir '%s' '%s' with SFTP [%d] %s\n",
-				//~ dir->path.c_str(), dir->rela.c_str(), errcode,
-				//~ errmsg ? errmsg : "Unknown error message");
-
-			//~ // return the errno detail from sftp session
-			//~ return libssh2_sftp_last_error(ctx->sftp_session);
 			prv_remote_error(ctx);
 			return -1;
 		}
@@ -588,6 +578,14 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 		memcpy(&file->attrs, &attrs, sizeof(attrs));
 	}
 
+	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str(),
+		SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
+
+	if (!handle) {
+		prv_remote_error(ctx);
+		return -3;
+	}
+
 	FILE* fd_local = fopen(local_file.c_str(), "rb");
 
 	if (!fd_local) {
@@ -595,9 +593,6 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 		LOG_ERR("Error opening file '%s'!\n", local_file.c_str());
 		return -2;
 	}
-
-	LIBSSH2_SFTP_HANDLE* handle = prv_open_file(ctx, remote_file.c_str(),
-		SNOD_REMOTE_OPEN_WRITE, SNOD_FILE_PERM(file->attrs));
 
 	// connection loop, check if socket is ready
 	int32_t nwritten = 0;
@@ -675,6 +670,14 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		memcpy(&file->attrs, &attrs, sizeof(attrs));
 	}
 
+	LIBSSH2_SFTP_HANDLE* handle
+		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_READ, 0);
+
+	if (!handle) {
+		prv_remote_error(ctx);
+		return -3;
+	}
+
 	FILE* fd_local = fopen(local_file.c_str(), "wb");
 
 	if (!fd_local) {
@@ -683,11 +686,8 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 		return -2;
 	}
 
-	LIBSSH2_SFTP_HANDLE* handle
-		= prv_open_file(ctx, remote_file.c_str(), SNOD_REMOTE_OPEN_READ, 0);
-
 	// connection loop, check if socket is ready
-	while (handle) {
+	while (1) {
 		int32_t nread = 0;
 
 		// remote read loop, loop until failed or no remaining bytes
