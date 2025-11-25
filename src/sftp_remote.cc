@@ -41,7 +41,7 @@
 
 #define SNOD_WAIT_STABLE 250
 
-#ifdef LOG_DBG
+#if LOG_LEVEL >= 2
 #	define LOG_DBG_FINGERPRINT(fp)                                            \
 		do {                                                                   \
 			LOG_ERR("Fingerprint ");                                           \

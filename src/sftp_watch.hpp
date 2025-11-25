@@ -65,8 +65,6 @@
 #	error "SNOD_HOSTKEY_HASH is undefined"
 #endif
 
-#define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
-
 enum FileType_e {
 	IS_INVALID  = '0',
 	IS_SYMLINK  = 'l',

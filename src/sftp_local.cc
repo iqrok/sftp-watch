@@ -1,12 +1,12 @@
-
-#include "sftp_local.hpp"
-
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
 
 #include <filesystem> // for removing directory
+
+#include "debug.hpp"
+#include "sftp_local.hpp"
 
 #if defined(_POSIX_VERSION)
 #	include <sys/stat.h>
@@ -288,7 +288,7 @@ int32_t SftpLocal::mkdir(SftpWatch_t* ctx, DirItem_t* file)
 #ifdef _WIN32
 	// NOTE: If the CreateDirectoryA succeeds, the return value is nonzero.
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
-	if (!rc) SftpLocal::set_error(ctx);;
+	if (!rc) SftpLocal::set_error(ctx);
 #endif
 
 	return rc;
