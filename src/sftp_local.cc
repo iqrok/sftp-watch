@@ -72,8 +72,14 @@ void SftpLocal::set_error(SftpWatch_t* ctx, int32_t rc, const char* msg)
 	}
 
 	ctx->last_error.type = ERR_FROM_LOCAL;
+
+#if defined(_POSIX_VERSION)
 	ctx->last_error.code = errno;
-	ctx->last_error.msg  = strerror(errno);
+#elif defined(_WIN32)
+	ctx->last_error.code = GetLastError();
+#endif
+
+	ctx->last_error.msg  = strerror(ctx->last_error.code);
 }
 
 int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
@@ -84,8 +90,7 @@ int32_t SftpLocal::open_dir(SftpWatch_t* ctx, Directory_t* dir)
 
 	errno = 0;
 	if ((dir->loc_handle = opendir(dir->path.c_str())) == NULL) {
-		LOG_ERR("Unable to open local dir '%s' '%s' with SFTP [%d] %s\n",
-			dir->path.c_str(), dir->rela.c_str(), errno, strerror(errno));
+		SftpLocal::set_error(ctx);
 		return errno;
 	}
 
@@ -114,17 +119,16 @@ int32_t SftpLocal::close_dir(SftpWatch_t* ctx, Directory_t* dir)
 
 	SNOD_RESET_ERRNO();
 	if (closedir(dir->loc_handle)) {
-		LOG_ERR("Unable to close local dir '%s' '%s' with SFTP [%d] %s\n",
-			dir->path.c_str(), dir->rela.c_str(), errno, strerror(errno));
+		SftpLocal::set_error(ctx);
 		return errno;
 	}
 
 #elif defined(_WIN32)
 
 	if (!FindClose(dir->loc_handle)) {
+		SftpLocal::set_error(ctx);
 		int32_t err = GetLastError();
-		LOG_ERR("Unable to close local dir '%s' '%s' with SFTP [%d]\n",
-			dir->path.c_str(), dir->rela.c_str(), err);
+		SftpLocal::set_error(ctx);
 		return err;
 	}
 
@@ -231,8 +235,7 @@ int32_t SftpLocal::remove(SftpWatch_t* ctx, std::string& filename)
 	std::string local_file = ctx->local_path + SNOD_SEP + filename;
 
 	if (::remove(local_file.c_str())) {
-		LOG_ERR(
-			"Err %d: %s '%s'\n", errno, strerror(errno), local_file.c_str());
+		SftpLocal::set_error(ctx);
 		return -1;
 	}
 
@@ -272,20 +275,20 @@ int32_t SftpLocal::mkdir(SftpWatch_t* ctx, DirItem_t* file)
 #ifdef _POSIX_VERSION
 	rc = ::mkdir(local_dir.c_str(), SNOD_FILE_PERM(file->attrs));
 	if (rc) {
-		LOG_ERR("Failed create directory: %d\n", errno);
+		SftpLocal::set_error(ctx);
 		return rc;
 	}
 
 	// set modified & access time time to match remote
 	if (utime(local_dir.c_str(), &times)) {
-		LOG_ERR("Failed to set mtime [%d]\n", errno);
+		SftpLocal::set_error(ctx);
 	}
 #endif
 
 #ifdef _WIN32
 	// NOTE: If the CreateDirectoryA succeeds, the return value is nonzero.
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
-	if (!rc) LOG_ERR("Failed create directory: %d\n", GetLastError());
+	if (!rc) SftpLocal::set_error(ctx);;
 #endif
 
 	return rc;
@@ -317,8 +320,7 @@ int32_t SftpLocal::filestat(
 
 	SNOD_RESET_ERRNO();
 	if (lstat(path.c_str(), &st)) {
-		LOG_ERR("FAILED lstat local file '%s' [%d] %s\n", path.c_str(), errno,
-			strerror(errno));
+		SftpLocal::set_error(ctx);
 		return errno;
 	}
 
