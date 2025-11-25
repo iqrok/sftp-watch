@@ -26,3 +26,4 @@ AlignTrailingComments:
   Kind: Always
   OverEmptyLines: 2
 MaxEmptyLinesToKeep: 1
+AlignArrayOfStructures: Left
