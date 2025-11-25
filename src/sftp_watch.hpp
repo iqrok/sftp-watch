@@ -122,12 +122,14 @@ struct SyncErr_s {
 	uint8_t     type = 0;
 	int32_t     code = 0;
 	const char* msg  = nullptr;
+	const char* path = nullptr;
 
 	SyncErr_s() { }
-	SyncErr_s(uint8_t type, int32_t code, const char* msg)
+	SyncErr_s(uint8_t type, int32_t code, const char* msg, const char* path)
 		: type(type)
 		, code(code)
 		, msg(msg)
+		, path(path)
 	{
 		// empty constructor
 	}
