@@ -7,6 +7,8 @@
 namespace SftpRemote {
 
 void    shutdown();
+void    set_error(SftpWatch_t* ctx);
+void    set_error(SftpWatch_t* ctx, int32_t rc, const char* msg);
 int32_t connect(SftpWatch_t* ctx);
 void    disconnect(SftpWatch_t* ctx);
 int32_t auth(SftpWatch_t* ctx);
