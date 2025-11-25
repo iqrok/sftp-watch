@@ -10,6 +10,7 @@ typedef struct EvtFile_s    EvtFile_t;
 
 class SftpNode : public Napi::ObjectWrap<SftpNode> {
 public:
+	std::string           id         = "";
 	std::atomic<bool>     is_running = false;
 	std::binary_semaphore sem_main;
 
@@ -31,6 +32,11 @@ public:
 		Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx);
 	static void tsfn_err_js_call(
 		SftpWatch_t* ctx, UserData_t data, SyncErr_t* error);
+
+	static void stop_finalizer(Napi::Env env, void* data, StopWorker_t* stop);
+	static void stop_js_call(
+		Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx);
+	static void stop_execute(StopWorker_t* stop, SftpNode* node_ctx);
 
 	static void thread_cleanup(SftpWatch_t* ctx, UserData_t data);
 

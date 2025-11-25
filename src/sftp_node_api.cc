@@ -107,17 +107,44 @@ void SftpNode::tsfn_err_js_call(
 	node_ctx->sem_err.acquire();
 }
 
+void SftpNode::stop_finalizer(Napi::Env env, void* data, StopWorker_t* stop)
+{
+	stop->thread.join();
+
+	Napi::Value val = Napi::String::New(env, static_cast<char*>(data));
+	stop->deferred.Resolve(val);
+}
+
+void SftpNode::stop_js_call(Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
+{
+	(void)env;
+	(void)js_cb;
+
+	node_ctx->cleanup();
+	node_ctx->is_running = false;
+	node_ctx->stop->sem_stop.release();
+}
+
+void SftpNode::stop_execute(StopWorker_t* stop, SftpNode* node_ctx)
+{
+	// wait until main thread is stopped
+	node_ctx->sem_main.acquire();
+
+	if (stop->tsfn.BlockingCall(node_ctx, stop_js_call)) {
+		Napi::Error::Fatal("StopWorker", "Failed BLocking Call");
+	}
+
+	stop->sem_stop.acquire();
+	stop->tsfn.Abort();
+	stop->tsfn.Release();
+}
+
 void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 {
 	(void)ctx;
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
 	node_ctx->sem_main.release();
-}
-
-SftpNode::~SftpNode()
-{
-	delete this->stop;
 }
 
 SftpNode::SftpNode(const Napi::CallbackInfo& info)
@@ -268,6 +295,13 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		this);
 
 	this->ctx = ctx;
+	this->id = ctx->host + ":" + std::to_string(ctx->port) + "@"
+		+ ctx->remote_path + ":" + ctx->local_path;
+}
+
+SftpNode::~SftpNode()
+{
+	delete this->stop;
 }
 
 EvtFile_t* SftpNode::set_file_event(
@@ -332,37 +366,6 @@ Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 	return Napi::Boolean::New(env, true);
 }
 
-void worker_finalizer(Napi::Env env, void* data, StopWorker_t* stop)
-{
-	(void)data;
-	stop->thread.join();
-	stop->deferred.Resolve(Napi::Boolean::New(env, true));
-}
-
-void worker_js_call(Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
-{
-	(void)env;
-	(void)js_cb;
-
-	node_ctx->cleanup();
-	node_ctx->is_running = false;
-	node_ctx->stop->sem_stop.release();
-}
-
-void worker_execute(StopWorker_t* stop, SftpNode* node_ctx)
-{
-	// wait until main thread is stopped
-	node_ctx->sem_main.acquire();
-
-	if (stop->tsfn.BlockingCall(node_ctx, worker_js_call)) {
-		Napi::Error::Fatal("StopWorker", "Failed BLocking Call");
-	}
-
-	stop->sem_stop.acquire();
-	stop->tsfn.Abort();
-	stop->tsfn.Release();
-}
-
 Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
@@ -382,17 +385,18 @@ Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 		this->stop->deferred = Napi::Promise::Deferred::New(env);
 	}
 
+	char* finalizer_data = const_cast<char*>(this->id.c_str());
 	this->stop->tsfn = Napi::ThreadSafeFunction::New(env, // NAPI Environment
 		Napi::Function::New(env, [](const Napi::CallbackInfo&) { }), // empty cb
-		"StopWorker",               // tsfn Resource name. for Debugging purpose
-		0,                          // Max queue size (0 = unlimited)
-		1,                          // initial thread count
-		this->stop,                 // context
-		worker_finalizer,           // finalizer callback
-		static_cast<void*>(nullptr) // unused finalizer data
+		"StopWorker",    // tsfn Resource name. for Debugging purpose
+		0,               // Max queue size (0 = unlimited)
+		1,               // initial thread count
+		this->stop,      // context
+		stop_finalizer,  // finalizer callback
+		static_cast<void*>(finalizer_data) // unused finalizer data
 	);
 
-	this->stop->thread = std::thread(worker_execute, this->stop, this);
+	this->stop->thread = std::thread(stop_execute, this->stop, this);
 
 	return this->stop->deferred.Promise();
 }
