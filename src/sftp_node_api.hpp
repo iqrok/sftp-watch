@@ -5,22 +5,20 @@
 
 #include "sftp_watch.hpp"
 
-typedef struct EvtFile_s {
-	bool       status;
-	uint8_t    ev;
-	DirItem_t* file;
-} EvtFile_t;
+typedef struct StopWorker_s StopWorker_t;
+typedef struct EvtFile_s    EvtFile_t;
 
 class SftpNode : public Napi::ObjectWrap<SftpNode> {
 public:
-	SyncErr_t*        last_error;
-	std::atomic<bool> is_resolved = false;
+	std::atomic<bool>     is_running = false;
+	std::binary_semaphore sem_main;
 
 	Napi::ThreadSafeFunction tsfn_sync = nullptr;
 	std::binary_semaphore    sem_sync;
 
 	Napi::ThreadSafeFunction tsfn_err = nullptr;
 	std::binary_semaphore    sem_err;
+	Napi::ObjectReference    obj_err;
 
 	static void tsfn_sync_finalizer(
 		Napi::Env env, SftpNode* data, SftpWatch_t* ctx);
@@ -37,11 +35,11 @@ public:
 	static void thread_cleanup(SftpWatch_t* ctx, UserData_t data);
 
 	Napi::ObjectReference* create_obj_error(Napi::Env env, SyncErr_t* error);
-	Napi::ObjectReference  obj_err;
 
 	SftpNode(const Napi::CallbackInfo& info);
+	~SftpNode();
 
-	void         cleanup(Napi::Env env);
+	void         cleanup();
 	SftpWatch_t* get_watch_ctx();
 	EvtFile_t*   set_file_event(EventFile_t& ev, bool& status, DirItem_t* file);
 	EvtFile_t*   get_file_event();
@@ -53,11 +51,34 @@ public:
 	Napi::Value listen_to(const Napi::CallbackInfo& info);
 	Napi::Value get_error(const Napi::CallbackInfo& info);
 
+	StopWorker_t* stop       = nullptr;
+	SyncErr_t*    last_error = nullptr;
+
 private:
 	SftpWatch_t* ctx = nullptr;
 	EvtFile_t*   ev_file; /**< pointer to event data for js callback */
+};
 
-	Napi::Promise::Deferred deferred;
+struct StopWorker_s {
+	Napi::Promise::Deferred  deferred;
+	Napi::ThreadSafeFunction tsfn;
+	SftpNode*                node_ctx;
+	std::thread              thread;
+	std::binary_semaphore    sem_stop;
+
+	StopWorker_s(const Napi::CallbackInfo& info, SftpNode* node_ctx)
+		: deferred(Napi::Promise::Deferred::New(info.Env()))
+		, node_ctx(node_ctx)
+		, sem_stop(0)
+	{
+		// empty constructor
+	}
+};
+
+struct EvtFile_s {
+	bool       status;
+	uint8_t    ev;
+	DirItem_t* file;
 };
 
 #endif

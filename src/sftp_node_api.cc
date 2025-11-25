@@ -3,13 +3,13 @@
 
 #include "debug.hpp"
 
+// TODO: make sure this finalizer is really unused
 void SftpNode::tsfn_sync_finalizer(
 	Napi::Env env, SftpNode* data, SftpWatch_t* ctx)
 {
-	SftpNode* node_ctx = static_cast<SftpNode*>(data);
-
-	SftpWatch::disconnect(ctx);
-	node_ctx->cleanup(env);
+	(void)env;
+	(void)data;
+	(void)ctx;
 }
 
 void SftpNode::tsfn_sync_cb(
@@ -84,8 +84,6 @@ void SftpNode::tsfn_err_cb(
 
 	js_cb.Call({ res->Value() });
 
-	//~ delete error;
-
 	// release the lock
 	node_ctx->sem_err.release();
 }
@@ -113,15 +111,20 @@ void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 {
 	(void)ctx;
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
-	node_ctx->tsfn_sync.Release();
-	if (node_ctx->tsfn_err) node_ctx->tsfn_err.Abort();
+
+	node_ctx->sem_main.release();
+}
+
+SftpNode::~SftpNode()
+{
+	delete this->stop;
 }
 
 SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	: Napi::ObjectWrap<SftpNode>(info)
+	, sem_main(0) // semaphore is initially locked
 	, sem_sync(0) // semaphore is initially locked
 	, sem_err(0)  // semaphore is initially locked
-	, deferred(Napi::Promise::Deferred::New(info.Env()))
 {
 	Napi::Env env = info.Env();
 
@@ -253,14 +256,16 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	}
 
 	Napi::Object o_error = Napi::Object::New(env);
-
-	obj_err = Napi::Persistent(o_error);
+	obj_err              = Napi::Persistent(o_error);
 	obj_err.SuppressDestruct();
 
-	env.AddCleanupHook([](void* data) {
-		(void)data;
-		LOG_DBG("CLEANING UP HOOK\n");
-	}, this);
+	env.AddCleanupHook(
+		[](void* data) {
+			SftpNode* node_ctx = static_cast<SftpNode*>(data);
+			node_ctx->obj_err.Reset();
+			LOG_DBG("CLEANING UP HOOK\n");
+		},
+		this);
 
 	this->ctx = ctx;
 }
@@ -292,12 +297,10 @@ SftpWatch_t* SftpNode::get_watch_ctx()
 	return nullptr;
 }
 
-void SftpNode::cleanup(Napi::Env env)
+void SftpNode::cleanup()
 {
+	SftpWatch::disconnect(ctx);
 	this->ctx->thread.join();
-
-	this->deferred.Resolve(Napi::String::New(env, this->ctx->host));
-	this->is_resolved = true;
 
 	// FIXME: Restart after cleaning up
 	SftpWatch::clear(this->ctx);
@@ -305,7 +308,7 @@ void SftpNode::cleanup(Napi::Env env)
 
 Napi::Value SftpNode::connect(const Napi::CallbackInfo& info)
 {
-	Napi::Env env         = info.Env();
+	Napi::Env env = info.Env();
 
 	if (SftpWatch::connect_or_reconnect(this->ctx)) {
 		return Napi::Boolean::New(env, false);
@@ -318,33 +321,91 @@ Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
-	if (!this->tsfn_sync) {
-		Napi::Error::Fatal("SyncDir", "Data Event callback is empty");
+	if (this->is_running) {
+		Napi::Error::Fatal("Sync", "Sync is already started!");
+		return Napi::Boolean::New(env, false);
 	}
 
-	if (this->is_resolved) {
-		this->deferred    = Napi::Promise::Deferred::New(env);
-		this->is_resolved = false;
+	this->is_running = true;
+	SftpWatch::start(this->ctx);
+
+	return Napi::Boolean::New(env, true);
+}
+
+void worker_finalizer(Napi::Env env, void* data, StopWorker_t* stop)
+{
+	(void)data;
+	stop->thread.join();
+	stop->deferred.Resolve(Napi::Boolean::New(env, true));
+}
+
+void worker_js_call(Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
+{
+	(void)env;
+	(void)js_cb;
+
+	node_ctx->cleanup();
+	node_ctx->is_running = false;
+	node_ctx->stop->sem_stop.release();
+}
+
+void worker_execute(StopWorker_t* stop, SftpNode* node_ctx)
+{
+	// wait until main thread is stopped
+	node_ctx->sem_main.acquire();
+
+	if (stop->tsfn.BlockingCall(node_ctx, worker_js_call)) {
+		Napi::Error::Fatal("StopWorker", "Failed BLocking Call");
 	}
 
-	SftpWatch_t* ctx = this->ctx;
-	SftpWatch::start(ctx);
-
-	return this->deferred.Promise();
+	stop->sem_stop.acquire();
+	stop->tsfn.Abort();
+	stop->tsfn.Release();
 }
 
 Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
 
+	if (!this->is_running) {
+		Napi::Error::Fatal("Stop", "Sync is not started!");
+		return env.Undefined();
+	}
+
 	SftpWatch::request_stop(this->ctx);
 
-	return env.Undefined();
+	if (!this->stop) {
+		// should only happens once when sync_stop is called the first time
+		this->stop = new StopWorker_t(info, this);
+	} else {
+		// Create a new Promise, as the previous one has been resolved
+		this->stop->deferred = Napi::Promise::Deferred::New(env);
+	}
+
+	this->stop->tsfn = Napi::ThreadSafeFunction::New(env, // NAPI Environment
+		Napi::Function::New(env, [](const Napi::CallbackInfo&) { }), // empty cb
+		"StopWorker",               // tsfn Resource name. for Debugging purpose
+		0,                          // Max queue size (0 = unlimited)
+		1,                          // initial thread count
+		this->stop,                 // context
+		worker_finalizer,           // finalizer callback
+		static_cast<void*>(nullptr) // unused finalizer data
+	);
+
+	this->stop->thread = std::thread(worker_execute, this->stop, this);
+
+	return this->stop->deferred.Promise();
 }
 
 Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 {
 	Napi::Env env = info.Env();
+
+	if (this->is_running) {
+		Napi::Error::Fatal(
+			"EventListen", "Can't change callback while running");
+		return Napi::Boolean::New(env, false);
+	}
 
 	if (info.Length() < 2) {
 		Napi::TypeError::New(env, "Invalid params. Should be <event, callback>")
@@ -371,6 +432,11 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 	SftpWatch_t* ctx = this->ctx;
 
 	if (name == "data") {
+		if (this->tsfn_sync) {
+			this->tsfn_sync.Abort();
+			this->tsfn_sync.Release();
+		}
+
 		this->tsfn_sync = Napi::ThreadSafeFunction::New(env, // Environment
 			info[1].As<Napi::Function>(),  // JS function from caller
 			resource_name,                 // Resource name
@@ -381,6 +447,11 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 			this                           // Finalizer data
 		);
 	} else if (name == "error") {
+		if (this->tsfn_err) {
+			this->tsfn_err.Abort();
+			this->tsfn_err.Release();
+		}
+
 		this->tsfn_err = Napi::ThreadSafeFunction::New(env, // Environment
 			info[1].As<Napi::Function>(), // JS function from caller
 			resource_name,                // Resource name
