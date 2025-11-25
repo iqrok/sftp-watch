@@ -406,7 +406,11 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
-		if (rc) ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		if (rc) {
+			ctx->last_error.path = (*it)->name.c_str();
+			ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		}
+
 		ctx->cb_file(ctx, ctx->user_data, (*it), true, EVT_FILE_DOWN);
 	}
 
@@ -431,13 +435,65 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
-		if (rc) ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		if (rc) {
+			ctx->last_error.path = (*it)->name.c_str();
+			ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		}
+
 		ctx->cb_file(ctx, ctx->user_data, (*it), true, EVT_FILE_UP);
 	}
 }
 
+/**
+ * @brief check for both local and remote root directories.
+ * The root directory must exist and can be opened by the app.
+ * */
+static bool check_root_dirs(SftpWatch_t* ctx)
+{
+	int32_t rc = 0;
+
+	LIBSSH2_SFTP_ATTRIBUTES attrs;
+
+	if ((rc = SftpRemote::get_filestat(ctx, ctx->remote_path, &attrs))) {
+		ctx->last_error.path = ctx->remote_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	rc = SftpRemote::open_dir(ctx, &ctx->remote_dirs.at("/"));
+	SftpRemote::close_dir(ctx, &ctx->remote_dirs.at("/"));
+
+	if (rc) {
+		ctx->last_error.path = ctx->remote_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	if ((rc = SftpLocal::filestat(ctx, ctx->local_path, &attrs))) {
+		ctx->last_error.path = ctx->local_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	rc = SftpLocal::open_dir(ctx, &ctx->local_dirs.at("/"));
+	SftpLocal::close_dir(ctx, &ctx->local_dirs.at("/"));
+
+	if (rc) {
+		ctx->last_error.path = ctx->local_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * @brief Main thread to check remote and local directories.
+ * */
 void sync_thread(SftpWatch_t* ctx)
 {
+	ctx->is_stopped = !check_root_dirs(ctx);
+
 	while (!ctx->is_stopped) {
 		int32_t     rc = 0;
 		AllIns_t    ins;
