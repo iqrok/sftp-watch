@@ -1,7 +1,10 @@
 #include "sftp_node_api.hpp"
 #include "sftp_err.hpp"
 
-void SftpNode::tsfn_sync_finalizer(Napi::Env env, SftpNode* data, SftpWatch_t* ctx)
+#include "debug.hpp"
+
+void SftpNode::tsfn_sync_finalizer(
+	Napi::Env env, SftpNode* data, SftpWatch_t* ctx)
 {
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
@@ -65,8 +68,7 @@ void SftpNode::tsfn_sync_js_call(SftpWatch_t* ctx, UserData_t data,
 	node_ctx->set_file_event(ev, status, file);
 
 	// BlockingCall() should never fail, since max queue size is 0
-	if (node_ctx->tsfn_sync.BlockingCall(node_ctx, tsfn_sync_cb)
-		!= napi_ok) {
+	if (node_ctx->tsfn_sync.BlockingCall(node_ctx, tsfn_sync_cb) != napi_ok) {
 		Napi::Error::Fatal("new file err", "BlockingCall() failed");
 	}
 
@@ -77,24 +79,12 @@ void SftpNode::tsfn_sync_js_call(SftpWatch_t* ctx, UserData_t data,
 void SftpNode::tsfn_err_cb(
 	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
 {
-	SyncErr_t* error = node_ctx->last_error;
+	SyncErr_t*             error = &node_ctx->ctx->last_error;
+	Napi::ObjectReference* res   = node_ctx->create_obj_error(env, error);
 
-	//~ Napi::Object obj = Napi::Object::New(env);
+	js_cb.Call({ res->Value() });
 
-	//~ obj.Set("type", Napi::Number::New(env, error->type));
-	//~ obj.Set("code", Napi::Number::New(env, error->code));
-	//~ obj.Set("msg", Napi::String::New(env, error->msg));
-	node_ctx->obj_err.Set("type", Napi::Number::New(env, error->type));
-	node_ctx->obj_err.Set("code", Napi::Number::New(env, error->code));
-	node_ctx->obj_err.Set("msg", Napi::String::New(env, error->msg));
-
-	//~ Napi::ObjectReference ref = Napi::Persistent(obj);
-
-	//~ js_cb.Call({ obj });
-	js_cb.Call({ node_ctx->obj_err.Value() });
-	//~ BREAKPOINT();
-
-	delete error;
+	//~ delete error;
 
 	// release the lock
 	node_ctx->sem_err.release();
@@ -104,16 +94,11 @@ void SftpNode::tsfn_err_js_call(
 	SftpWatch_t* ctx, UserData_t data, SyncErr_t* error)
 {
 	(void)ctx;
+	(void)error;
 
 	SftpNode* node_ctx = static_cast<SftpNode*>(data);
 
-	//~ if (error->msg == nullptr) return;
-	//~ const char* err_name = SftpErr::session_error(error->code);
-	//~ printf("Error type %d [%d:%s] %s\n", error->type, error->code, err_name, error->msg);
-
 	if (!node_ctx->tsfn_err) return;
-
-	node_ctx->last_error = new SyncErr_t(error->type, error->code, error->msg);
 
 	// BlockingCall() should never fail, since max queue size is 0
 	if (node_ctx->tsfn_err.BlockingCall(node_ctx, tsfn_err_cb) != napi_ok) {
@@ -135,7 +120,7 @@ void SftpNode::thread_cleanup(SftpWatch_t* ctx, UserData_t data)
 SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	: Napi::ObjectWrap<SftpNode>(info)
 	, sem_sync(0) // semaphore is initially locked
-	, sem_err(0) // semaphore is initially locked
+	, sem_err(0)  // semaphore is initially locked
 	, deferred(Napi::Promise::Deferred::New(info.Env()))
 {
 	Napi::Env env = info.Env();
@@ -154,10 +139,6 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	std::string pubkey;
 	std::string privkey;
 	std::string password;
-
-	env.AddCleanupHook([](void* data){
-		printf("WOTAAAAAA..........\n");
-	}, this);
 
 	// ------------------- Mandatory properties --------------------------------
 	if (arg.Has("host")) {
@@ -240,10 +221,9 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	}
 
 	// ------------------------ Init context -----------------------------------
-	SftpWatch_t* ctx
-		= new SftpWatch_t(host, username, pubkey, privkey, password, remote_dir,
-			local_dir, SftpNode::tsfn_sync_js_call, SftpNode::tsfn_err_js_call,
-			SftpNode::thread_cleanup);
+	SftpWatch_t* ctx = new SftpWatch_t(host, username, pubkey, privkey,
+		password, remote_dir, local_dir, SftpNode::tsfn_sync_js_call,
+		SftpNode::tsfn_err_js_call, SftpNode::thread_cleanup);
 
 	SftpWatch::set_user_data(ctx, static_cast<UserData_t>(this));
 
@@ -277,13 +257,12 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	obj_err = Napi::Persistent(o_error);
 	obj_err.SuppressDestruct();
 
-	env.AddCleanupHook([](void* data){
-		printf("CLEANING UP HOOK\n");
+	env.AddCleanupHook([](void* data) {
+		(void)data;
+		LOG_DBG("CLEANING UP HOOK\n");
 	}, this);
 
 	this->ctx = ctx;
-
-
 }
 
 EvtFile_t* SftpNode::set_file_event(
@@ -322,27 +301,17 @@ void SftpNode::cleanup(Napi::Env env)
 
 	// FIXME: Restart after cleaning up
 	SftpWatch::clear(this->ctx);
-
-	//~ delete this->ctx;
-	//~ this->ctx = nullptr;
 }
 
 Napi::Value SftpNode::connect(const Napi::CallbackInfo& info)
 {
 	Napi::Env env         = info.Env();
-	uint32_t  max_attempt = 0;
 
-	if (info[0].IsNumber()) {
-		max_attempt = info[0].As<Napi::Number>().Uint32Value();
+	if (SftpWatch::connect_or_reconnect(this->ctx)) {
+		return Napi::Boolean::New(env, false);
 	}
 
-	for (uint32_t i = 0; i < max_attempt || max_attempt == 0; i++) {
-		if (!SftpWatch::connect_or_reconnect(this->ctx)) {
-			return Napi::Boolean::New(env, true);
-		}
-	}
-
-	return Napi::Boolean::New(env, false);
+	return Napi::Boolean::New(env, true);
 }
 
 Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
@@ -403,13 +372,13 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 
 	if (name == "data") {
 		this->tsfn_sync = Napi::ThreadSafeFunction::New(env, // Environment
-			info[1].As<Napi::Function>(),    // JS function from caller
-			resource_name,                   // Resource name
-			0,                               // Max queue_si size (0 = unlimited).
-			1,                               // Initial thread count
-			ctx,                             // Context,
-			SftpNode::tsfn_sync_finalizer,   // Finalizer
-			this                             // Finalizer data
+			info[1].As<Napi::Function>(),  // JS function from caller
+			resource_name,                 // Resource name
+			0,                             // Max queue_si size (0 = unlimited).
+			1,                             // Initial thread count
+			ctx,                           // Context,
+			SftpNode::tsfn_sync_finalizer, // Finalizer
+			this                           // Finalizer data
 		);
 	} else if (name == "error") {
 		this->tsfn_err = Napi::ThreadSafeFunction::New(env, // Environment
@@ -427,23 +396,41 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 	return info.This();
 }
 
-Napi::Value SftpNode::get_error(const Napi::CallbackInfo& info)
+Napi::ObjectReference* SftpNode::create_obj_error(
+	Napi::Env env, SyncErr_t* error)
 {
-	Napi::Env env = info.Env();
-
-	SyncErr_t* error = &this->ctx->last_error;
-
 	this->obj_err.Set("type", Napi::Number::New(env, error->type));
 	this->obj_err.Set("code", Napi::Number::New(env, error->code));
 
-	if (error->code) {
-		this->obj_err.Set("msg", Napi::String::New(env, error->msg));
+	if (error->path) {
+		this->obj_err.Set("path", Napi::String::New(env, error->path));
+	} else {
+		this->obj_err.Set("path", Napi::String::New(env, ""));
+	}
+
+	if (error->msg) {
+		std::string msg(error->msg);
+
+		if (error->type == ERR_FROM_SESSION) {
+			msg = msg + " [" + SftpErr::session_error(error->code) + "]";
+		}
+
+		this->obj_err.Set("msg", Napi::String::New(env, msg));
 	} else {
 		this->obj_err.Set("msg", Napi::String::New(env, "No Error"));
 	}
 
-	return this->obj_err.Value();
-	//~ return Napi::Number::New(env, 20);
+	return &this->obj_err;
+}
+
+Napi::Value SftpNode::get_error(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	SyncErr_t*             error = &this->ctx->last_error;
+	Napi::ObjectReference* res   = this->create_obj_error(env, error);
+
+	return res->Value();
 }
 
 Napi::Object init_napi(Napi::Env env, Napi::Object exports)

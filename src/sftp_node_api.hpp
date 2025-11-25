@@ -13,7 +13,7 @@ typedef struct EvtFile_s {
 
 class SftpNode : public Napi::ObjectWrap<SftpNode> {
 public:
-	SyncErr_t* last_error;
+	SyncErr_t*        last_error;
 	std::atomic<bool> is_resolved = false;
 
 	Napi::ThreadSafeFunction tsfn_sync = nullptr;
@@ -21,7 +21,6 @@ public:
 
 	Napi::ThreadSafeFunction tsfn_err = nullptr;
 	std::binary_semaphore    sem_err;
-	Napi::ObjectReference    obj_err;
 
 	static void tsfn_sync_finalizer(
 		Napi::Env env, SftpNode* data, SftpWatch_t* ctx);
@@ -36,6 +35,9 @@ public:
 		SftpWatch_t* ctx, UserData_t data, SyncErr_t* error);
 
 	static void thread_cleanup(SftpWatch_t* ctx, UserData_t data);
+
+	Napi::ObjectReference* create_obj_error(Napi::Env env, SyncErr_t* error);
+	Napi::ObjectReference  obj_err;
 
 	SftpNode(const Napi::CallbackInfo& info);
 
