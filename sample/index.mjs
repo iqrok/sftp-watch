@@ -58,6 +58,20 @@ function syncCb(file) {
 	);
 }
 
+function errorCb(error) {
+	console.error(error);
+}
+
+function errorTable(error) {
+	console.table(error);
+}
+
+function errorJSON(error) {
+	console.log(JSON.stringify(error));
+}
+
+const arrErrCb = [ errorCb, errorTable, errorJSON ];
+
 let i = 0;
 const sftp = new SftpWatch(config);
 
@@ -66,25 +80,27 @@ if (!sftp.connect()) {
 	process.exit(1);
 }
 
-// save returned promise for stopping later
-let sync = sftp.sync(syncCb);
+async function stopProc() {
+	console.log('\nSTOPPING', i);
 
-process.on('SIGINT', async () => {
-		console.log('\nSTOPPING', i);
+	// request stop
+	const stop = await sftp.stop();
 
-		// request stop
-		sftp.stop();
+	console.log("\nSTOPPED", stop);
 
-		// wait until sync process is stopped
-		const stop = await sync.then(id => id);
+	// restart once again
+	if (i++ > 2) {
+		process.exit(0);
+	} else {
+		sftp.connect();
+		sftp.on('error', arrErrCb[i % arrErrCb.length]).sync();
+		setTimeout(stopProc, 2000);
+	}
+}
 
-		console.log("\nSTOPPED", stop);
+sftp.on('data', syncCb)
+	.on('error', arrErrCb[i])
+	.sync();
 
-		// restart once again
-		if (i++ > 0) {
-			process.exit(0);
-		} else {
-			sftp.connect();
-			sync = sftp.sync(syncCb);
-		}
-	});
+process.on('SIGINT', stopProc);
+//~ setTimeout(stopProc, 2000);

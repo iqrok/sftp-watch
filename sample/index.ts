@@ -59,33 +59,40 @@ function syncCb(file: FileInfo): void {
 	);
 }
 
+function errorCb(err) : void {
+	console.error('Ini ERROR');
+	console.log(err);
+}
+
 let i: number = 0;
 const sftp = new SftpWatch(config);
+
+async function stopProc() : void {
+		console.log('\nSTOPPING', i);
+
+		// request stop
+		const stop = await sftp.stop();
+
+		console.log("\nSTOPPED", stop);
+
+		// restart once again
+		if (i++ > 1) {
+			process.exit(0);
+		} else {
+			sftp.connect();
+			sftp.sync(syncCb);
+			setTimeout(stopProc, 2500);
+		}
+	};
 
 if (!sftp.connect()) {
 	console.error('Failed to connect to SFTP server');
 	process.exit(1);
 }
 
-// save returned promise for stopping later
-let sync = sftp.sync(syncCb);
+sftp.on("data", syncCb)
+	.on("error", errorCb)
+	.sync();
 
-process.on('SIGINT', async () => {
-		console.log('\nSTOPPING', i);
-
-		// request stop
-		sftp.stop();
-
-		// wait until sync process is stopped
-		const stop = await sync.then(id => id);
-
-		console.log("\nSTOPPED", stop);
-
-		// restart once again
-		if (i++ > 0) {
-			process.exit(0);
-		} else {
-			sftp.connect();
-			sync = sftp.sync(syncCb);
-		}
-	});
+process.on('SIGINT', stopProc);
+//~ setTimeout(stopProc, 3000);
