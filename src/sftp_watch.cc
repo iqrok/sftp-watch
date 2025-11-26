@@ -606,3 +606,8 @@ void SftpWatch::clear(SftpWatch_t* ctx)
 
 	ctx->err_count = 0;
 }
+
+uint8_t SftpWatch::status(SftpWatch_t* ctx)
+{
+	return static_cast<uint8_t>(ctx->status);
+}

@@ -242,6 +242,7 @@ int32_t set_user_data(SftpWatch_t* ctx, UserData_t data);
 void    start(SftpWatch_t* ctx);
 void    request_stop(SftpWatch_t* ctx);
 void    clear(SftpWatch_t* ctx);
+uint8_t status(SftpWatch_t* ctx);
 
 }
 
