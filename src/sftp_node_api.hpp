@@ -10,8 +10,9 @@ typedef struct EvtFile_s    EvtFile_t;
 
 class SftpNode : public Napi::ObjectWrap<SftpNode> {
 public:
-	std::string           id         = "";
-	std::atomic<bool>     is_running = false;
+	std::string       id         = "";
+	std::atomic<bool> is_running = false;
+
 	std::binary_semaphore sem_main;
 
 	Napi::ThreadSafeFunction tsfn_sync = nullptr;
@@ -56,6 +57,7 @@ public:
 	Napi::Value sync_stop(const Napi::CallbackInfo& info);
 	Napi::Value listen_to(const Napi::CallbackInfo& info);
 	Napi::Value get_error(const Napi::CallbackInfo& info);
+	Napi::Value fingerprint(const Napi::CallbackInfo& info);
 
 	StopWorker_t* stop       = nullptr;
 	SyncErr_t*    last_error = nullptr;

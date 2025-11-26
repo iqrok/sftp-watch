@@ -115,7 +115,8 @@ void SftpNode::stop_finalizer(Napi::Env env, void* data, StopWorker_t* stop)
 	stop->deferred.Resolve(val);
 }
 
-void SftpNode::stop_js_call(Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
+void SftpNode::stop_js_call(
+	Napi::Env env, Napi::Function js_cb, SftpNode* node_ctx)
 {
 	(void)env;
 	(void)js_cb;
@@ -158,6 +159,7 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	if (info.Length() < 1 || !info[0].IsObject()) {
 		Napi::TypeError::New(env, "Expected an object")
 			.ThrowAsJavaScriptException();
+		return;
 	}
 
 	Napi::Object arg = info[0].As<Napi::Object>();
@@ -175,24 +177,28 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		if (!arg.Get("host").IsString() || arg.Get("host").IsEmpty()) {
 			Napi::TypeError::New(env, "'host' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		host = arg.Get("host").As<Napi::String>().Utf8Value();
 	} else {
 		Napi::TypeError::New(env, "'host' is undefined")
 			.ThrowAsJavaScriptException();
+		return;
 	}
 
 	if (arg.Has("username")) {
 		if (!arg.Get("username").IsString() || arg.Get("username").IsEmpty()) {
 			Napi::TypeError::New(env, "'username' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		username = arg.Get("username").As<Napi::String>().Utf8Value();
 	} else {
 		Napi::TypeError::New(env, "'username' is undefined")
 			.ThrowAsJavaScriptException();
+		return;
 	}
 
 	if (arg.Has("remotePath")) {
@@ -200,12 +206,14 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 			|| arg.Get("remotePath").IsEmpty()) {
 			Napi::TypeError::New(env, "'remotePath' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		remote_dir.path = arg.Get("remotePath").As<Napi::String>().Utf8Value();
 	} else {
 		Napi::TypeError::New(env, "'remotePath' is undefined")
 			.ThrowAsJavaScriptException();
+		return;
 	}
 
 	if (arg.Has("localPath")) {
@@ -213,6 +221,7 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 			|| arg.Get("localPath").IsEmpty()) {
 			Napi::TypeError::New(env, "'localPath' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		local_dir.path = arg.Get("localPath").As<Napi::String>().Utf8Value();
@@ -223,6 +232,7 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		if (!arg.Get("pubkey").IsString() || arg.Get("pubkey").IsEmpty()) {
 			Napi::TypeError::New(env, "'pubkey' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		pubkey = arg.Get("pubkey").As<Napi::String>().Utf8Value();
@@ -232,6 +242,7 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		if (!arg.Get("privkey").IsString() || arg.Get("privkey").IsEmpty()) {
 			Napi::TypeError::New(env, "'privkey' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		privkey = arg.Get("privkey").As<Napi::String>().Utf8Value();
@@ -241,13 +252,15 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		if (!arg.Get("password").IsString() || arg.Get("password").IsEmpty()) {
 			Napi::TypeError::New(env, "'password' is empty")
 				.ThrowAsJavaScriptException();
+			return;
 		}
 
 		password = arg.Get("password").As<Napi::String>().Utf8Value();
 	}
 
 	if ((pubkey.empty() || privkey.empty()) && password.empty()) {
-		Napi::TypeError::New(env, "invalid auth").ThrowAsJavaScriptException();
+		Napi::Error::New(env, "invalid auth").ThrowAsJavaScriptException();
+		return;
 	}
 
 	// ------------------------ Init context -----------------------------------
@@ -295,7 +308,7 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		this);
 
 	this->ctx = ctx;
-	this->id = ctx->host + ":" + std::to_string(ctx->port) + "@"
+	this->id  = ctx->host + ":" + std::to_string(ctx->port) + "@"
 		+ ctx->remote_path + ":" + ctx->local_path;
 }
 
@@ -356,7 +369,14 @@ Napi::Value SftpNode::sync_start(const Napi::CallbackInfo& info)
 	Napi::Env env = info.Env();
 
 	if (this->is_running) {
-		Napi::Error::Fatal("Sync", "Sync is already started!");
+		Napi::Error::New(env, "Sync is already started!")
+			.ThrowAsJavaScriptException();
+		return Napi::Boolean::New(env, false);
+	}
+
+	if (SftpWatch::status(this->ctx) < SNOD_AUTHENTICATED) {
+		Napi::Error::New(env, "Not Yet Connected/Authenticated!")
+			.ThrowAsJavaScriptException();
 		return Napi::Boolean::New(env, false);
 	}
 
@@ -371,7 +391,8 @@ Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 	Napi::Env env = info.Env();
 
 	if (!this->is_running) {
-		Napi::Error::Fatal("Stop", "Sync is not started!");
+		Napi::Error::New(env, "Sync is not started!")
+			.ThrowAsJavaScriptException();
 		return env.Undefined();
 	}
 
@@ -388,11 +409,11 @@ Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 	char* finalizer_data = const_cast<char*>(this->id.c_str());
 	this->stop->tsfn = Napi::ThreadSafeFunction::New(env, // NAPI Environment
 		Napi::Function::New(env, [](const Napi::CallbackInfo&) { }), // empty cb
-		"StopWorker",    // tsfn Resource name. for Debugging purpose
-		0,               // Max queue size (0 = unlimited)
-		1,               // initial thread count
-		this->stop,      // context
-		stop_finalizer,  // finalizer callback
+		"StopWorker",   // tsfn Resource name. for Debugging purpose
+		0,              // Max queue size (0 = unlimited)
+		1,              // initial thread count
+		this->stop,     // context
+		stop_finalizer, // finalizer callback
 		static_cast<void*>(finalizer_data) // unused finalizer data
 	);
 
@@ -508,6 +529,14 @@ Napi::Value SftpNode::get_error(const Napi::CallbackInfo& info)
 	return res->Value();
 }
 
+Napi::Value SftpNode::fingerprint(const Napi::CallbackInfo& info)
+{
+	Napi::Env env = info.Env();
+
+	const std::vector<uint8_t>& fp = this->ctx->fingerprint;
+	return Napi::Buffer<uint8_t>::Copy(env, fp.data(), fp.size());
+}
+
 Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 {
 	std::initializer_list<Napi::ClassPropertyDescriptor<SftpNode>> properties
@@ -517,6 +546,7 @@ Napi::Object init_napi(Napi::Env env, Napi::Object exports)
 			  SftpNode::InstanceMethod("stop", &SftpNode::sync_stop),
 			  SftpNode::InstanceMethod("on", &SftpNode::listen_to),
 			  SftpNode::InstanceMethod("getError", &SftpNode::get_error),
+			  SftpNode::InstanceMethod("fingerprint", &SftpNode::fingerprint),
 		  };
 
 	Napi::Function func = SftpNode::DefineClass(env, "SftpNode", properties);
