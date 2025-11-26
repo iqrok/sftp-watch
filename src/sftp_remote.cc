@@ -10,6 +10,7 @@
 #	include <arpa/inet.h>
 #	include <unistd.h>
 #	include <utime.h>
+#	include <poll.h>
 #elif defined(_WIN32)
 #	include <winsock2.h>  // sockets, basic networking
 #	include <ws2tcpip.h>  // getaddrinfo, inet_pton, etc.
@@ -18,6 +19,9 @@
 #	include <sys/types.h> // basic types
 #	include <sys/stat.h>  // file status
 #	include <sys/utime.h> // _utime(), _utimbuf
+
+#	define poll   WSAPoll
+#	define pollfd WSAPOLLFD
 
 #	define SHUT_RDWR     SD_BOTH
 #	define stat          _stat
@@ -62,7 +66,7 @@ enum RemoteOpenDirection_e {
 
 static bool is_inited = false; /**< Whether libssh2 is initialized or nor */
 
-static int     waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session);
+static int32_t waitsocket(SftpWatch_t* ctx);
 static int32_t prv_auth_password(SftpWatch_t* ctx);
 static LIBSSH2_SFTP_HANDLE* prv_open_file(
 	SftpWatch_t* ctx, const char* remote_path, uint8_t direction, long mode);
@@ -71,39 +75,23 @@ static void kbd_callback(const char* name, int name_len,
 	const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
 	LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract);
 
-// Straight copied from example/sftp_RW_nonblock.c
-static int waitsocket(libssh2_socket_t socket_fd, LIBSSH2_SESSION* session)
+static int32_t waitsocket(SftpWatch_t* ctx)
 {
-	struct timeval timeout;
-	int            rc;
-	fd_set         fd;
-	fd_set*        writefd = NULL;
-	fd_set*        readfd  = NULL;
-	int            dir;
+	const int32_t timeout_ms = ctx->timeout_sec * 1000;
+	struct pollfd pfd = {
+		.fd      = ctx->sock,
+		.events  = 0,
+		.revents = 0,
+	};
 
-	timeout.tv_sec  = 10;
-	timeout.tv_usec = 0;
+	int32_t dir = libssh2_session_block_directions(ctx->session);
 
-	FD_ZERO(&fd);
+	if (dir & LIBSSH2_SESSION_BLOCK_INBOUND) pfd.events |= POLLIN;
 
-#if defined(__GNUC__) || defined(__clang__)
-#	pragma GCC diagnostic push
-#	pragma GCC diagnostic ignored "-Wsign-conversion"
-#endif
-	FD_SET(socket_fd, &fd);
-#if defined(__GNUC__) || defined(__clang__)
-#	pragma GCC diagnostic pop
-#endif
+	if (dir & LIBSSH2_SESSION_BLOCK_OUTBOUND) pfd.events |= POLLOUT;
 
-	/* now make sure we wait in the correct direction */
-	dir = libssh2_session_block_directions(session);
-
-	if (dir & LIBSSH2_SESSION_BLOCK_INBOUND) readfd = &fd;
-
-	if (dir & LIBSSH2_SESSION_BLOCK_OUTBOUND) writefd = &fd;
-
-	rc = select(
-		static_cast<int>(socket_fd + 1), readfd, writefd, NULL, &timeout);
+	// since we only have 1 fd, harcode the size
+	int32_t rc = poll(&pfd, 1, timeout_ms);
 
 	return rc;
 }
@@ -169,7 +157,7 @@ static LIBSSH2_SFTP_HANDLE* prv_open_file(
 				break;
 			} else {
 				// non-blocking open, now we wait until socket is ready
-				waitsocket(ctx->sock, ctx->session);
+				waitsocket(ctx);
 			}
 		}
 	} while (!handle);
@@ -468,7 +456,7 @@ void SftpRemote::disconnect(SftpWatch_t* ctx)
 
 	if (ctx->sftp_session) {
 		while (FN_RC_EAGAIN(rc, libssh2_sftp_shutdown(ctx->sftp_session))) {
-			waitsocket(ctx->sock, ctx->session);
+			waitsocket(ctx);
 		}
 
 		ctx->sftp_session = nullptr;
@@ -477,11 +465,11 @@ void SftpRemote::disconnect(SftpWatch_t* ctx)
 	if (ctx->session) {
 		while (FN_RC_EAGAIN(
 			rc, libssh2_session_disconnect(ctx->session, "Normal Shutdown"))) {
-			waitsocket(ctx->sock, ctx->session);
+			waitsocket(ctx);
 		}
 
 		while (FN_RC_EAGAIN(rc, libssh2_session_free(ctx->session))) {
-			waitsocket(ctx->sock, ctx->session);
+			waitsocket(ctx);
 		}
 
 		ctx->sftp_session = nullptr;
@@ -606,7 +594,7 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 			while (FN_RC_EAGAIN(
 				nwritten, libssh2_sftp_write(handle, ptr, nread))) {
 				// negative is error, 0 is timeout
-				int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
+				int32_t wait_rc = waitsocket(ctx);
 				if (wait_rc == 0) {
 					rc = LIBSSH2_ERROR_TIMEOUT;
 					SftpLocal::set_error(ctx);
@@ -632,7 +620,7 @@ int32_t SftpRemote::up_file(SftpWatch_t* ctx, DirItem_t* file)
 
 	// close both sftp and file handle
 	while (FN_RC_EAGAIN(rc, libssh2_sftp_close(handle))) {
-		waitsocket(ctx->sock, ctx->session);
+		waitsocket(ctx);
 	}
 	fclose(fd_local);
 
@@ -698,7 +686,7 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 
 		// negative is error, 0 is timeout
 		errno           = 0;
-		int32_t wait_rc = waitsocket(ctx->sock, ctx->session);
+		int32_t wait_rc = waitsocket(ctx);
 		if (wait_rc == 0) {
 			rc = LIBSSH2_ERROR_TIMEOUT;
 			SftpLocal::set_error(ctx);
@@ -716,7 +704,7 @@ int32_t SftpRemote::down_file(SftpWatch_t* ctx, DirItem_t* file)
 
 	// close both sftp and file handle
 	while (FN_RC_EAGAIN(rc, libssh2_sftp_close(handle))) {
-		waitsocket(ctx->sock, ctx->session);
+		waitsocket(ctx);
 	}
 
 	fclose(fd_local);
@@ -820,7 +808,7 @@ int32_t SftpRemote::set_filestat(
 	while (FN_RC_EAGAIN(rc,
 		libssh2_sftp_stat_ex(ctx->sftp_session, path.c_str(), path.size(),
 			LIBSSH2_SFTP_SETSTAT, &remote_attrs))) {
-		if (waitsocket(ctx->sock, ctx->session) < 0) break;
+		if (waitsocket(ctx) < 0) break;
 	}
 
 	return rc;
@@ -834,7 +822,7 @@ int32_t SftpRemote::get_filestat(
 	while (FN_RC_EAGAIN(rc,
 		libssh2_sftp_stat_ex(ctx->sftp_session, path.c_str(), path.size(),
 			LIBSSH2_SFTP_LSTAT, attrs))) {
-		if (waitsocket(ctx->sock, ctx->session) < 0) break;
+		if (waitsocket(ctx) < 0) break;
 	}
 
 	if (rc) SftpRemote::set_error(ctx);
