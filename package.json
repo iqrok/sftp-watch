@@ -22,7 +22,7 @@
 	],
 	"scripts": {
 		"sample": "node sample/index.js",
-		"rebuild:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1 -D CMAKE_BUILD_TYPE=Release",
+		"rebuild:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1 --config Release",
 		"rebuild:dbg": "cmake-js rebuild -D CMAKE_BUILD_TYPE=Debug",
 		"rebuild": "cmake-js rebuild",
 		"build:dbg": "cmake-js build --debug",
