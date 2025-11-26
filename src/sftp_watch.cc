@@ -522,7 +522,9 @@ void sync_thread(SftpWatch_t* ctx)
 				}
 				SNOD_DELAY_MS(reconnect_delay);
 			}
-			ctx->err_count = 0;
+
+			// reset on succesful reconnection
+			SftpWatch::clear(ctx);
 		}
 
 		SNOD_THREAD_WAIT(SNOD_PRV_WAIT_MS, ctx->delay_ms, !ctx->is_stopped);
