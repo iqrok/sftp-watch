@@ -67,7 +67,7 @@ function errorCb(err) : void {
 let i: number = 0;
 const sftp = new SftpWatch(config);
 
-async function stopProc() : void {
+async function stopProc() : Promise<void> {
 		console.log('\nSTOPPING', i);
 
 		// request stop
@@ -80,7 +80,7 @@ async function stopProc() : void {
 			process.exit(0);
 		} else {
 			sftp.connect();
-			sftp.sync(syncCb);
+			sftp.sync();
 			setTimeout(stopProc, 2500);
 		}
 	};
