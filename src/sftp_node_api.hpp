@@ -73,11 +73,13 @@ struct StopWorker_s {
 	SftpNode*                node_ctx;
 	std::thread              thread;
 	std::binary_semaphore    sem_stop;
+	std::atomic<bool>        is_requested;
 
 	StopWorker_s(const Napi::CallbackInfo& info, SftpNode* node_ctx)
 		: deferred(Napi::Promise::Deferred::New(info.Env()))
 		, node_ctx(node_ctx)
 		, sem_stop(0)
+		, is_requested(false)
 	{
 		// empty constructor
 	}

@@ -113,6 +113,7 @@ void SftpNode::stop_finalizer(Napi::Env env, void* data, StopWorker_t* stop)
 
 	Napi::Value val = Napi::String::New(env, static_cast<char*>(data));
 	stop->deferred.Resolve(val);
+	stop->is_requested = false;
 }
 
 void SftpNode::stop_js_call(
@@ -396,6 +397,12 @@ Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 		return env.Undefined();
 	}
 
+	if (this->stop && this->stop->is_requested) {
+		Napi::Error::New(env, "Stop is already requested!")
+			.ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+
 	SftpWatch::request_stop(this->ctx);
 
 	if (!this->stop) {
@@ -417,6 +424,7 @@ Napi::Value SftpNode::sync_stop(const Napi::CallbackInfo& info)
 		static_cast<void*>(finalizer_data) // unused finalizer data
 	);
 
+	this->stop->is_requested = true;
 	this->stop->thread = std::thread(stop_execute, this->stop, this);
 
 	return this->stop->deferred.Promise();
