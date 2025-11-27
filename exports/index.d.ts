@@ -26,11 +26,21 @@ export interface FileInfo {
 	perm: number;
 }
 
+export interface FileError {
+	type: number;
+	code: number;
+	msg: string;
+	path: string;
+}
+
 export type SyncCallback = (info: FileInfo) => void;
+export type ErrorCallback = (error: FileError) => void;
 
 export default class SftpWatch {
 	constructor(config: Config);
-	connect(maxAttempt?: number): boolean;
-	sync(syncCb: SyncCallback): Promise<string>;
-	stop(): void;
+	connect(): boolean;
+	sync(): boolean;
+	on(name: string, callback: SyncCallback | ErrorCallback): this;
+	stop(): Promise<string>;
+	getError(): FileError;
 }
