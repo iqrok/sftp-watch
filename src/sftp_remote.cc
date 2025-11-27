@@ -21,7 +21,6 @@
 #	include <sys/utime.h> // _utime(), _utimbuf
 
 #	define poll   WSAPoll
-#	define pollfd WSAPOLLFD
 
 #	define SHUT_RDWR     SD_BOTH
 #	define stat          _stat
@@ -769,12 +768,20 @@ int32_t SftpRemote::mkdir(SftpWatch_t* ctx, DirItem_t* dir)
 		}
 	}
 
+#ifdef _WIN32
+	/*
+	 * setting directory attribute from Windows is confusing.
+	 * Assume no error if directory already exists
+	 * */
+	rc = 0;
+#else
 	// set file stat if it's different
 	if (memcmp(&dir->attrs, &attrs, sizeof(LIBSSH2_SFTP_ATTRIBUTES))) {
 		if ((rc = SftpRemote::set_filestat(ctx, remote_dir, &dir->attrs))) {
 			SftpRemote::set_error(ctx);
 		}
 	}
+#endif
 
 	return rc;
 }

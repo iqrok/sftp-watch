@@ -288,7 +288,9 @@ int32_t SftpLocal::mkdir(SftpWatch_t* ctx, DirItem_t* file)
 #ifdef _WIN32
 	// NOTE: If the CreateDirectoryA succeeds, the return value is nonzero.
 	rc = CreateDirectoryA(local_dir.c_str(), NULL);
-	if (!rc) SftpLocal::set_error(ctx);
+	if (!rc && GetLastError() != ERROR_ALREADY_EXISTS) {
+		SftpLocal::set_error(ctx);
+	}
 #endif
 
 	return rc;

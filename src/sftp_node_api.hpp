@@ -1,6 +1,8 @@
 #ifndef _SFTP_NODE_API_HPP
 #define _SFTP_NODE_API_HPP
 
+#include <semaphore>
+
 #include <napi.h>
 
 #include "sftp_watch.hpp"

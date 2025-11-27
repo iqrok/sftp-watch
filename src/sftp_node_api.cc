@@ -44,7 +44,8 @@ void SftpNode::tsfn_sync_cb(
 	obj.Set("status", Napi::Boolean::New(env, ev->status));
 	obj.Set("name", Napi::String::New(env, ev->file->name));
 	obj.Set("type", Napi::String::New(env, SNOD_CHR2STR(ev->file->type)));
-	obj.Set("size", Napi::Number::New(env, ev->file->attrs.filesize));
+	obj.Set("size",
+		Napi::Number::New(env, static_cast<double>(ev->file->attrs.filesize)));
 	obj.Set("time", Napi::Number::New(env, SNOD_SEC2MS(ev->file->attrs.mtime)));
 	obj.Set("perm", Napi::Number::New(env, SNOD_FILE_PERM(ev->file->attrs)));
 
@@ -265,35 +266,36 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 	}
 
 	// ------------------------ Init context -----------------------------------
-	SftpWatch_t* ctx = new SftpWatch_t(host, username, pubkey, privkey,
+	this->ctx = new SftpWatch_t(host, username, pubkey, privkey,
 		password, remote_dir, local_dir, SftpNode::tsfn_sync_js_call,
 		SftpNode::tsfn_err_js_call, SftpNode::thread_cleanup);
 
-	SftpWatch::set_user_data(ctx, static_cast<UserData_t>(this));
+	SftpWatch::set_user_data(this->ctx, static_cast<UserData_t>(this));
 
 	// -------------------- Optional properties --------------------------------
 	if (arg.Has("port")) {
 		uint32_t tmp = arg.Get("port").As<Napi::Number>().Uint32Value();
-		ctx->port    = static_cast<uint16_t>(tmp);
+		this->ctx->port    = static_cast<uint16_t>(tmp);
 	}
 
 	if (arg.Has("delayMs")) {
 		uint32_t tmp = arg.Get("delayMs").As<Napi::Number>().Uint32Value();
-		if (tmp > 0) ctx->delay_ms = tmp;
+		if (tmp > 0) this->ctx->delay_ms = tmp;
 	}
 
 	if (arg.Has("timeout")) {
 		uint32_t tmp = arg.Get("timeout").As<Napi::Number>().Uint32Value();
-		if (tmp > 0) ctx->timeout_sec = static_cast<uint16_t>(tmp);
+		if (tmp > 0) this->ctx->timeout_sec = static_cast<uint16_t>(tmp);
 	}
 
 	if (arg.Has("maxErrCount")) {
 		uint32_t tmp = arg.Get("maxErrCount").As<Napi::Number>().Uint32Value();
-		ctx->max_err_count = static_cast<uint8_t>(tmp);
+		this->ctx->max_err_count = static_cast<uint8_t>(tmp);
 	}
 
 	if (arg.Has("useKeyboard")) {
-		ctx->use_keyboard = arg.Get("useKeyboard").As<Napi::Boolean>().Value();
+		this->ctx->use_keyboard
+			= arg.Get("useKeyboard").As<Napi::Boolean>().Value();
 	}
 
 	Napi::Object o_error = Napi::Object::New(env);
@@ -308,9 +310,8 @@ SftpNode::SftpNode(const Napi::CallbackInfo& info)
 		},
 		this);
 
-	this->ctx = ctx;
-	this->id  = ctx->host + ":" + std::to_string(ctx->port) + "@"
-		+ ctx->remote_path + ":" + ctx->local_path;
+	this->id = ctx->host + ":" + std::to_string(ctx->port) + "@"
+		+ this->ctx->remote_path + ":" + this->ctx->local_path;
 }
 
 SftpNode::~SftpNode()
@@ -322,7 +323,7 @@ EvtFile_t* SftpNode::set_file_event(
 	EventFile_t& ev, bool& status, DirItem_t* file)
 {
 	this->ev_file         = new EvtFile_t;
-	this->ev_file->ev     = ev;
+	this->ev_file->ev     = static_cast<uint8_t>(ev);
 	this->ev_file->status = status;
 	this->ev_file->file   = file;
 
@@ -459,10 +460,7 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 	}
 
 	std::string name = info[0].As<Napi::String>().Utf8Value();
-	std::string resource_name
-		= name + "_" + ctx->host + ":" + std::to_string(ctx->port);
-
-	SftpWatch_t* ctx = this->ctx;
+	std::string resource_name = name + "_" + this->id;
 
 	if (name == "data") {
 		if (this->tsfn_sync) {
@@ -475,7 +473,7 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 			resource_name,                 // Resource name
 			0,                             // Max queue_si size (0 = unlimited).
 			1,                             // Initial thread count
-			ctx,                           // Context,
+			this->ctx,                           // Context,
 			SftpNode::tsfn_sync_finalizer, // Finalizer
 			this                           // Finalizer data
 		);
@@ -490,7 +488,7 @@ Napi::Value SftpNode::listen_to(const Napi::CallbackInfo& info)
 			resource_name,                // Resource name
 			0,                            // Max queue_si size (0 = unlimited).
 			1,                            // Initial thread count
-			ctx                           // Context,
+			this->ctx                           // Context,
 		);
 	} else {
 		Napi::TypeError::New(env, "Unknown Event name " + name)

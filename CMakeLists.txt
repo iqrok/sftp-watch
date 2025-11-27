@@ -237,6 +237,17 @@ else ()
 
 	if (libssh2_FOUND)
 		target_link_libraries("${PROJECT_NAME}" PRIVATE libssh2::libssh2)
+
+		get_target_property(LIBSSH2_INCLUDE_DIR libssh2::libssh2 INTERFACE_INCLUDE_DIRECTORIES)
+
+		target_include_directories("${SFTPWATCH_MAIN_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_REMOTE_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_LOCAL_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
 	else ()
 		find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2 REQUIRED)
 		find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
@@ -247,6 +258,15 @@ else ()
 			PRIVATE "${LIBSSH2_LIBRARY}")
 
 		target_include_directories("${PROJECT_NAME}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_MAIN_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_REMOTE_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_LOCAL_OBJ}"
 			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
 	endif ()
 endif ()
