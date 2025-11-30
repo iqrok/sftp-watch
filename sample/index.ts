@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import SftpWatch from '@iqrok/sftp-watch';
-import type { FileInfo } from '@iqrok/sftp-watch';
+import type { Config, FileInfo, FileError, FileEvent } from '@iqrok/sftp-watch';
 
-import config from './config.json' with { type: "json" };
+const config: Config = JSON.parse(
+		await fs.promises.readFile(import.meta.dirname + '/config.json', 'utf8')
+	);
 
 // overwrite localPath to use sample/test directory
 config.localPath = import.meta.dirname + '/test';
@@ -33,13 +35,13 @@ function formatBytes(size: number, useBinary: boolean = true): string {
 	return `${formatted.padStart(6)} ${units[i].padEnd(pad)}`;
 }
 
-function getEvtColor(evt: string): string {
+function getEvtColor(evt: FileEvent): string {
 	switch(evt) {
 	case 'delR': return '\x1b[1m\x1b[31m';
 	case 'delL': return '\x1b[1m\x1b[91m';
-	case 'up': return '\x1b[35m';
+	case 'up':   return '\x1b[35m';
 	case 'down': return '\x1b[1m\x1b[32m';
-	default   : return '\x1b[0m';
+	default:     return '\x1b[0m';
 	}
 }
 
@@ -59,31 +61,12 @@ function syncCb(file: FileInfo): void {
 	);
 }
 
-function errorCb(err) : void {
+function errorCb(err: FileError) : void {
 	console.error('Ini ERROR');
 	console.log(err);
 }
 
-let i: number = 0;
 const sftp = new SftpWatch(config);
-
-async function stopProc() : Promise<void> {
-		console.log('\nSTOPPING', i);
-
-		// request stop
-		const stop = await sftp.stop();
-
-		console.log("\nSTOPPED", stop);
-
-		// restart once again
-		if (i++ > 1) {
-			process.exit(0);
-		} else {
-			sftp.connect();
-			sftp.sync();
-			setTimeout(stopProc, 2500);
-		}
-	};
 
 if (!sftp.connect()) {
 	console.error('Failed to connect to SFTP server');
@@ -93,6 +76,26 @@ if (!sftp.connect()) {
 sftp.on("data", syncCb)
 	.on("error", errorCb)
 	.sync();
+
+let i: number = 0;
+async function stopProc() : Promise<void> {
+		console.log('\nSTOPPING', i);
+
+		// request stop
+		const stop = await sftp.stop();
+
+		console.log("\nSTOPPED", stop);
+
+		// restart once again
+		if (i++ >= 1) {
+			console.log("Exit.");
+			process.exit(0);
+		} else {
+			sftp.connect();
+			sftp.sync();
+			setTimeout(stopProc, 2500);
+		}
+	};
 
 process.on('SIGINT', stopProc);
 //~ setTimeout(stopProc, 3000);
