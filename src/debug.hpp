@@ -2,6 +2,26 @@
 #define _SFTP_NODE_DEBUG
 
 #ifndef NDEBUG
+#	define LOG_LEVEL 2
+#endif
+
+#ifndef LOG_LEVEL
+#	define LOG_LEVEL 0
+#endif
+
+#if LOG_LEVEL >= 1
+#	define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
+#else
+#	define LOG_ERR(...) ((void)0)
+#endif
+
+#if LOG_LEVEL >= 2
+#	define LOG_DBG(...) fprintf(stdout, __VA_ARGS__)
+#else
+#	define LOG_DBG(...) ((void)0)
+#endif
+
+#ifndef NDEBUG
 #	include <cassert> // for assert()
 
 /** Alias for SIGTRAP in debug mode. */
@@ -13,8 +33,6 @@
 #		include <signal.h>
 #		define BREAKPOINT() raise(SIGTRAP)
 #	endif
-
-#	define LOG_DBG(...) fprintf(stderr, __VA_ARGS__)
 
 #	define UNREACHABLE_MSG(...)                                               \
 		do {                                                                   \
@@ -28,7 +46,6 @@
 
 #	define BREAKPOINT()         ((void)0)
 #	define assert(...)          ((void)0)
-#	define LOG_DBG(...)         ((void)0)
 #	define UNREACHABLE_MSG(...) ((void)0)
 
 #endif

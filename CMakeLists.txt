@@ -35,6 +35,31 @@ project(sftp-watch
 	LANGUAGES C CXX
 	VERSION "${PACKAGE_VERSION}")
 
+string(TOLOWER "${CMAKE_SYSTEM_NAME}" PLATFORM_STR)
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" ARCH_STR)
+
+if (PLATFORM_STR STREQUAL "windows")
+	set(PLATFORM_STR "win32")
+endif ()
+
+if (ARCH_STR STREQUAL "x86_64" OR ARCH_STR STREQUAL "amd64")
+	set(ARCH_STR "x64")
+endif ()
+
+if (ARCH_STR STREQUAL "i386" OR ARCH_STR STREQUAL "i686")
+	set(ARCH_STR "ia32")
+endif ()
+
+if (ARCH_STR STREQUAL "aarch64")
+	set(ARCH_STR "arm64")
+endif ()
+
+if (ARCH_STR STREQUAL "armv7l" OR ARCH_STR STREQUAL "armv6l")
+	set(ARCH_STR "arm")
+endif ()
+
+set(SYSTEM_SUFFIX "${PLATFORM_STR}-${ARCH_STR}")
+
 set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 set(INC_DIR "${SRC_DIR}/include")
 set(TARGET_LIB_DIR "${CMAKE_BINARY_DIR}/lib")
@@ -47,20 +72,45 @@ if (NOT "$ENV{SFTP_FILENAME_MAX_LEN}" STREQUAL "")
 	set(SFTP_FILENAME_MAX_LEN "$ENV{SFTP_FILENAME_MAX_LEN}")
 endif ()
 
+set(SFTPWATCH_LOCAL_OBJ objSftpWatchLocal)
+add_library("${SFTPWATCH_LOCAL_OBJ}" OBJECT "${SRC_DIR}/sftp_local.cc")
+target_include_directories("${SFTPWATCH_LOCAL_OBJ}" PRIVATE "${INC_DIR}")
+set_target_properties("${SFTPWATCH_LOCAL_OBJ}"
+	PROPERTIES POSITION_INDEPENDENT_CODE 1)
+
+set(SFTPWATCH_REMOTE_OBJ objSftpWatchRemote)
+add_library("${SFTPWATCH_REMOTE_OBJ}" OBJECT "${SRC_DIR}/sftp_remote.cc")
+target_include_directories("${SFTPWATCH_REMOTE_OBJ}" PRIVATE "${INC_DIR}")
+set_target_properties("${SFTPWATCH_REMOTE_OBJ}"
+	PROPERTIES POSITION_INDEPENDENT_CODE 1)
+
+set(SFTPWATCH_ERROR_OBJ objSftpWatchError)
+add_library("${SFTPWATCH_ERROR_OBJ}" OBJECT "${SRC_DIR}/sftp_err.cc")
+target_include_directories("${SFTPWATCH_ERROR_OBJ}" PRIVATE "${INC_DIR}")
+set_target_properties("${SFTPWATCH_ERROR_OBJ}"
+	PROPERTIES POSITION_INDEPENDENT_CODE 1)
+
+set(SFTPWATCH_MAIN_OBJ objSftpWatchMain)
+add_library("${SFTPWATCH_MAIN_OBJ}" OBJECT "${SRC_DIR}/sftp_watch.cc")
+target_include_directories("${SFTPWATCH_MAIN_OBJ}" PRIVATE "${INC_DIR}")
+set_target_properties("${SFTPWATCH_MAIN_OBJ}"
+	PROPERTIES POSITION_INDEPENDENT_CODE 1)
+
 add_library("${PROJECT_NAME}"
 	SHARED
 		${CMAKE_JS_SRC}
-		"${SRC_DIR}/sftp_local.cc"
-		"${SRC_DIR}/sftp_remote.cc"
-		"${SRC_DIR}/sftp_watch.cc"
-		"${SRC_DIR}/sftp_node_api.cc")
+		"${SRC_DIR}/sftp_node_api.cc"
+		"$<TARGET_OBJECTS:${SFTPWATCH_LOCAL_OBJ}>"
+		"$<TARGET_OBJECTS:${SFTPWATCH_REMOTE_OBJ}>"
+		"$<TARGET_OBJECTS:${SFTPWATCH_ERROR_OBJ}>"
+		"$<TARGET_OBJECTS:${SFTPWATCH_MAIN_OBJ}>")
 
 set_target_properties("${PROJECT_NAME}"
 	PROPERTIES
 		POSITION_INDEPENDENT_CODE 1
 		LIBRARY_OUTPUT_DIRECTORY "${TARGET_LIB_DIR}"
 		PREFIX ""
-		SUFFIX ".node")
+		SUFFIX ".${SYSTEM_SUFFIX}.node")
 
 target_include_directories("${PROJECT_NAME}"
 	PRIVATE
@@ -89,7 +139,6 @@ endif ()
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	target_compile_options("${PROJECT_NAME}"
 		PRIVATE
-			#~ -fexceptions # enable exception
 			-Wall
 			-Wextra
 			-Wfatal-errors
@@ -127,7 +176,6 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 	else ()
 		target_compile_options("${PROJECT_NAME}"
 			PRIVATE
-				#~ -EHsc # enable exception
 				-Wall
 				-W4
 				-O2)
@@ -188,9 +236,18 @@ else ()
 	find_package(libssh2 QUIET)
 
 	if (libssh2_FOUND)
-		target_link_libraries("${PROJECT_NAME}"
-			PRIVATE
-				libssh2::libssh2)
+		target_link_libraries("${PROJECT_NAME}" PRIVATE libssh2::libssh2)
+
+		get_target_property(LIBSSH2_INCLUDE_DIR libssh2::libssh2 INTERFACE_INCLUDE_DIRECTORIES)
+
+		target_include_directories("${SFTPWATCH_MAIN_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_REMOTE_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_LOCAL_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
 	else ()
 		find_library(LIBSSH2_LIBRARY NAMES ssh2 libssh2 REQUIRED)
 		find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
@@ -201,6 +258,15 @@ else ()
 			PRIVATE "${LIBSSH2_LIBRARY}")
 
 		target_include_directories("${PROJECT_NAME}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_MAIN_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_REMOTE_OBJ}"
+			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
+
+		target_include_directories("${SFTPWATCH_LOCAL_OBJ}"
 			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
 	endif ()
 endif ()

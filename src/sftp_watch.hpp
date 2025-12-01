@@ -4,11 +4,10 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
-#include <semaphore>
+#include <string>
 #include <thread>
 #include <unordered_set>
 #include <vector>
-#include <string>
 
 #include <libssh2.h>
 #include <libssh2_sftp.h>
@@ -66,8 +65,6 @@
 #	error "SNOD_HOSTKEY_HASH is undefined"
 #endif
 
-#define LOG_ERR(...) fprintf(stderr, __VA_ARGS__)
-
 enum FileType_e {
 	IS_INVALID  = '0',
 	IS_SYMLINK  = 'l',
@@ -79,6 +76,12 @@ enum FileType_e {
 	IS_SOCK     = 's',
 };
 
+enum ConnStatus_e {
+	SNOD_DISCONNECTED  = 0U,
+	SNOD_CONNECTED     = 1U,
+	SNOD_AUTHENTICATED = 2U,
+};
+
 typedef enum EventFile_e {
 	EVT_FILE_LDEL = 0x00,
 	EVT_FILE_UP   = 0x01,
@@ -86,12 +89,20 @@ typedef enum EventFile_e {
 	EVT_FILE_DOWN = 0x03,
 } EventFile_t;
 
+typedef enum ErrorFrom_e {
+	ERR_FROM_CUSTOM  = 0x00,
+	ERR_FROM_LOCAL   = 0x01,
+	ERR_FROM_SESSION = 0x02,
+	ERR_FROM_SFTP    = 0x03,
+} ErrorFrom_t;
+
 typedef void* UserData_t;
 
 typedef struct DirItem_s   DirItem_t;
 typedef struct SftpWatch_s SftpWatch_t;
 typedef struct Directory_s Directory_t;
 typedef struct SyncQueue_s SyncQueue_t;
+typedef struct SyncErr_s   SyncErr_t;
 
 typedef std::map<std::string, Directory_t> DirList_t;
 typedef std::map<std::string, DirItem_t>   PathFile_t;
@@ -102,6 +113,25 @@ typedef std::map<std::string, std::unordered_set<std::string>> AllIns_t;
 typedef void (*sync_file_cb)(SftpWatch_t* ctx, UserData_t data, DirItem_t* file,
 	bool status, EventFile_t ev);
 typedef void (*sync_cleanup_cb)(SftpWatch_t* ctx, UserData_t data);
+typedef void (*sync_err_cb)(
+	SftpWatch_t* ctx, UserData_t data, SyncErr_t* error);
+
+struct SyncErr_s {
+	uint8_t     type = 0;
+	int32_t     code = 0;
+	const char* msg  = nullptr;
+	const char* path = nullptr;
+
+	SyncErr_s() { }
+	SyncErr_s(uint8_t type, int32_t code, const char* msg, const char* path)
+		: type(type)
+		, code(code)
+		, msg(msg)
+		, path(path)
+	{
+		// empty constructor
+	}
+};
 
 struct SyncQueue_s {
 	std::vector<DirItem_t*> l_new;
@@ -152,16 +182,18 @@ struct SftpWatch_s {
 	std::string password;
 	bool        use_keyboard = true;
 
-	std::atomic<bool>    is_connected  = false;
+	std::atomic<uint8_t> status        = SNOD_DISCONNECTED;
 	std::atomic<uint8_t> err_count     = 0;
 	uint8_t              max_err_count = 3;
+
+	SyncErr_t last_error;
 
 	std::atomic<bool> is_stopped = false; /**< set to true to stop sync loop */
 	uint32_t          delay_ms   = 1000;  /**< delay between sync loop */
 
 	libssh2_socket_t     sock;
-	LIBSSH2_SESSION*     session;
-	LIBSSH2_SFTP*        sftp_session;
+	LIBSSH2_SESSION*     session      = nullptr;
+	LIBSSH2_SFTP*        sftp_session = nullptr;
 	std::vector<uint8_t> fingerprint;
 
 	std::thread thread;
@@ -176,13 +208,15 @@ struct SftpWatch_s {
 	DirList_t local_dirs;
 
 	sync_file_cb    cb_file;
+	sync_err_cb     cb_err;
 	sync_cleanup_cb cb_cleanup;
 
 	UserData_t user_data = nullptr;
 
 	SftpWatch_s(std::string host, std::string username, std::string pubkey,
 		std::string privkey, std::string password, Directory_t remote_dir,
-		Directory_t local_dir, sync_file_cb cb_file, sync_cleanup_cb cb_cleanup)
+		Directory_t local_dir, sync_file_cb cb_file, sync_err_cb cb_err,
+		sync_cleanup_cb cb_cleanup)
 		: host(host)
 		, username(username)
 		, remote_path(remote_dir.path)
@@ -191,6 +225,7 @@ struct SftpWatch_s {
 		, privkey(privkey)
 		, password(password)
 		, cb_file(cb_file)
+		, cb_err(cb_err)
 		, cb_cleanup(cb_cleanup)
 	{
 		this->remote_dirs[SNOD_SEP] = remote_dir;
@@ -207,6 +242,7 @@ int32_t set_user_data(SftpWatch_t* ctx, UserData_t data);
 void    start(SftpWatch_t* ctx);
 void    request_stop(SftpWatch_t* ctx);
 void    clear(SftpWatch_t* ctx);
+uint8_t status(SftpWatch_t* ctx);
 
 }
 

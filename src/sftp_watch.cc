@@ -384,24 +384,31 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 	for (auto it = que.r_new.begin(); it != que.r_new.end() && !ctx->is_stopped;
 		++it) {
 
+		int32_t rc = 0;
+
 		switch ((*it)->type) {
 
 		case IS_DIR: {
-			SftpLocal::mkdir(ctx, (*it));
+			rc = SftpLocal::mkdir(ctx, (*it));
 		} break;
 
 		case IS_SYMLINK: {
-			SftpRemote::down_symlink(ctx, *it);
+			rc = SftpRemote::down_symlink(ctx, *it);
 		} break;
 
 		case IS_REG_FILE: {
 			ctx->cb_file(ctx, ctx->user_data, (*it), false, EVT_FILE_DOWN);
-			SftpRemote::down_file(ctx, *it);
+			rc = SftpRemote::down_file(ctx, *it);
 		} break;
 
 		default: {
 			// nothing to do for now
 		} break;
+		}
+
+		if (rc) {
+			ctx->last_error.path = (*it)->name.c_str();
+			ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
 		}
 
 		ctx->cb_file(ctx, ctx->user_data, (*it), true, EVT_FILE_DOWN);
@@ -410,15 +417,17 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 	for (auto it = que.l_new.begin(); it != que.l_new.end() && !ctx->is_stopped;
 		++it) {
 
+		int32_t rc = 0;
+
 		switch ((*it)->type) {
 
 		case IS_REG_FILE: {
 			ctx->cb_file(ctx, ctx->user_data, (*it), false, EVT_FILE_UP);
-			SftpRemote::up_file(ctx, (*it));
+			rc = SftpRemote::up_file(ctx, (*it));
 		} break;
 
 		case IS_DIR: {
-			SftpRemote::mkdir(ctx, (*it));
+			rc = SftpRemote::mkdir(ctx, (*it));
 		} break;
 
 		default: {
@@ -426,12 +435,65 @@ static void sync_dir_op(SftpWatch_t* ctx, SyncQueue_t& que)
 		} break;
 		}
 
+		if (rc) {
+			ctx->last_error.path = (*it)->name.c_str();
+			ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		}
+
 		ctx->cb_file(ctx, ctx->user_data, (*it), true, EVT_FILE_UP);
 	}
 }
 
+/**
+ * @brief check for both local and remote root directories.
+ * The root directory must exist and can be opened by the app.
+ * */
+static bool check_root_dirs(SftpWatch_t* ctx)
+{
+	int32_t rc = 0;
+
+	LIBSSH2_SFTP_ATTRIBUTES attrs;
+
+	if ((rc = SftpRemote::get_filestat(ctx, ctx->remote_path, &attrs))) {
+		ctx->last_error.path = ctx->remote_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	rc = SftpRemote::open_dir(ctx, &ctx->remote_dirs.at("/"));
+	SftpRemote::close_dir(ctx, &ctx->remote_dirs.at("/"));
+
+	if (rc) {
+		ctx->last_error.path = ctx->remote_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	if ((rc = SftpLocal::filestat(ctx, ctx->local_path, &attrs))) {
+		ctx->last_error.path = ctx->local_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	rc = SftpLocal::open_dir(ctx, &ctx->local_dirs.at("/"));
+	SftpLocal::close_dir(ctx, &ctx->local_dirs.at("/"));
+
+	if (rc) {
+		ctx->last_error.path = ctx->local_path.c_str();
+		ctx->cb_err(ctx, ctx->user_data, &ctx->last_error);
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * @brief Main thread to check remote and local directories.
+ * */
 void sync_thread(SftpWatch_t* ctx)
 {
+	ctx->is_stopped = !check_root_dirs(ctx);
+
 	while (!ctx->is_stopped) {
 		int32_t     rc = 0;
 		AllIns_t    ins;
@@ -460,7 +522,9 @@ void sync_thread(SftpWatch_t* ctx)
 				}
 				SNOD_DELAY_MS(reconnect_delay);
 			}
-			ctx->err_count = 0;
+
+			// reset on succesful reconnection
+			SftpWatch::clear(ctx);
 		}
 
 		SNOD_THREAD_WAIT(SNOD_PRV_WAIT_MS, ctx->delay_ms, !ctx->is_stopped);
@@ -508,11 +572,9 @@ int32_t SftpWatch::set_user_data(SftpWatch_t* ctx, UserData_t data)
 
 int32_t SftpWatch::connect_or_reconnect(SftpWatch_t* ctx)
 {
-	SftpWatch::disconnect(ctx);
+	SftpRemote::disconnect(ctx);
 
 	if (SftpRemote::connect(ctx)) return -1;
-
-	ctx->is_connected = true;
 
 	if (SftpRemote::auth(ctx)) return -2;
 
@@ -532,8 +594,7 @@ void SftpWatch::request_stop(SftpWatch_t* ctx)
 
 void SftpWatch::disconnect(SftpWatch_t* ctx)
 {
-	if (ctx->is_connected) SftpRemote::disconnect(ctx);
-	ctx->is_connected = false;
+	SftpRemote::disconnect(ctx);
 }
 
 void SftpWatch::clear(SftpWatch_t* ctx)
@@ -546,4 +607,9 @@ void SftpWatch::clear(SftpWatch_t* ctx)
 	prv_clear_dirs(&ctx->local_dirs);
 
 	ctx->err_count = 0;
+}
+
+uint8_t SftpWatch::status(SftpWatch_t* ctx)
+{
+	return static_cast<uint8_t>(ctx->status);
 }

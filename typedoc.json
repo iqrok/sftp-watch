@@ -1,0 +1,6 @@
+{
+	"entryPoints": [ "exports/index.d.ts" ],
+	"out": "docs/",
+	"plugin": [ "typedoc-plugin-rename-defaults" ],
+	"excludeExternals": true
+}

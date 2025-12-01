@@ -21,5 +21,8 @@ int32_t remove(SftpWatch_t* ctx, std::string& filename);
 void rmdir(SftpWatch_t* ctx, DirItem_t* file);
 void rmdir(SftpWatch_t* ctx, std::string& dirname);
 
+void set_error(SftpWatch_t* ctx);
+void set_error(SftpWatch_t* ctx, int32_t rc, const char* msg);
+
 }
 #endif

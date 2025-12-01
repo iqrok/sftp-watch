@@ -49,65 +49,13 @@ it must be run from Administrator Shell.
 For the libraries, use **vcpkg**:
 
 ```shell
-vcpkg install openssl libssh2 zlib
+vcpkg install libssh2 openssl zlib
 ```
 NOTE: I am not very familiar with building on Windows. I installed the libraries system-wide to mimic the Linux experience.
 
 You can read how I prepared my Windows environment in [this note](https://gitlab.com/-/snippets/4901502)
 
-## Interface
-
-### Config
-
-Configuration object for `sftp-watch` used to establish a connection and manage sync behavior.
-
-| Key | Type | Mandatory | Description |
-|-----|------|------------|-------------|
-| **host** | `string` | Yes | Remote target's IP address or domain name. |
-| **port** | `number` | No *(default = 22)* | Remote target's SFTP port (default is usually 22). |
-| **remotePath** | `string` | Yes | Absolute path of the remote root directory to be synced. |
-| **localPath** | `string` | Yes | Local directory where synced files are stored. |
-| **username** | `string` | Yes | Username for authentication. |
-| **password** | `string` | Yes *(if `privkey` is not provided)* | Password for authentication. Ignored when key-based authentication is used. |
-| **privkey** | `string` | Yes *(if `password` is not provided)* | Path to private key for key-based authentication. |
-| **pubkey** | `string` | Yes *(if `privkey` is provided)* | Path to public key for key-based authentication. |
-| **use_keyboard** | `bool` | No *(default = true)* | Use keyboard interactive to send password. |
-| **timeout** | `number` | No *(default = 60 seconds)* | Connection timeout in seconds. |
-| **delayMs** | `number` | No *(default = 1000 ms)* | Delay between checks in milliseconds. |
-| **maxErrCount** | `number` | No *(default = 3)* | Number of consecutive errors before restarting the connection. |
-
-> **WARNING:** Both `remotePath` and `localPath` must exist.
-> **Note:** Use either password-based **or** key-based authentication. If both are supplied, key-based authentication takes precedence.
-
----
-
-### FileInfo
-
-Information about each file or directory synced, passed to the callback.
-
-| Key | Type | Description |
-|-----|------|-------------|
-| **evt** | `'down' \| 'up' \| 'delR'` \| 'delL'` | Event type |
-| **status** | `boolean` | True if file download/upload is finished |
-| **type** | `'f' \| 'd'` | Type of item - `'f'` for file, `'d'` for directory. |
-| **time** | `number` | UNIX timestamp of the last modification time. |
-| **size** | `number` | File size in bytes. |
-| **name** | `string` | File name without the root path. |
-
----
-
-## Callback
-
-### `syncCb(info)`
-
-This callback is called every time a file or directory is successfully synced.
-
-#### Parameters
-- **info** - [`FileInfo`](#fileinfo) object containing details about the synced item.
-
----
-
-## Example Usage
+## Example
 
 ```js
 const SftpWatch = require('@iqrok/sftp-watch');
@@ -131,13 +79,12 @@ const syncCb = (info) => {
 };
 
 sftp.connect();
-const sync = sftp.sync(syncCb);
+const sync = sftp.on(syncCb).sync();
 
 // stop monitoring on ctrl + c;
 process.on('SIGINT', async () => {
-   sftp.stop();
-   await sync;
-   process.exit(0);
+  await sftp.stop();
+  process.exit(0);
 });
 ```
 
@@ -150,7 +97,5 @@ Known limitations are as follows:
 - Synchronization happens immediately when a new file is detected. As a consequence, if the remote file is still being written (e.g., during download), the client will start syncing that file.
 
 - Renaming and moving a file/directory is handled as deletion -> creation. It would be a problem if the file size is large or the directory contains many files
-
-- Many errors are still hidden within the C++ layer and have not yet been exposed to JavaScript.
 
 - No prebuilt binary exists. So, you really need to install the [prequsites](#prerequisites) above.

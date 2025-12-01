@@ -1,6 +1,6 @@
 {
 	"name": "@iqrok/sftp-watch",
-	"version": "0.4.0",
+	"version": "0.5.0",
 	"type": "module",
 	"main": "exports/index.cjs",
 	"module": "exports/index.mjs",
@@ -21,18 +21,21 @@
 		"CMakeLists.txt"
 	],
 	"scripts": {
-		"sample": "node sample/index.js",
-		"rebuild:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1 -D CMAKE_BUILD_TYPE=Release",
+		"sample": "node sample/index.mjs",
+		"docs": "typedoc",
+		"rebuild:static": "cmake-js rebuild --CDUSE_STATIC_LIBS=1 --config Release",
 		"rebuild:dbg": "cmake-js rebuild -D CMAKE_BUILD_TYPE=Debug",
-		"rebuild": "cmake-js rebuild",
+		"rebuild": "cmake-js rebuild --config Release",
+		"build:dbg": "cmake-js build --debug",
+		"build": "cmake-js build --config Release",
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
-		"postinstall": "npm run compile"
+		"postinstall": "npm run build"
 	},
 	"devDependencies": {
-		"cmake-js": "^7.3.1"
-	},
-	"dependencies": {
-		"node-addon-api": "^8.5.0"
+		"cmake-js": "^7.3.1",
+		"node-addon-api": "^8.5.0",
+		"typedoc": "^0.28.15",
+		"typedoc-plugin-rename-defaults": "^0.7.3"
 	}
 }

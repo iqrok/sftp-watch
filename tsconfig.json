@@ -9,6 +9,9 @@
 			"~/*": ["./*"]
 		}
 	},
+	"files": [
+		"exports/index.d.ts"
+	],
 	"include": [
 		"exports/*.ts"
 	],

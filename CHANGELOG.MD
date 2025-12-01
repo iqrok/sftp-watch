@@ -1,5 +1,13 @@
 # CHAGELOG
 
+## 0.5.0
+- Expose SFTP error to javascript via callback function
+- Added `on()` to register callbacks
+- Added `getError()` to get last error details
+- Moved promise to `stop()`. 
+- Fixed restarting synchronization process.
+- Fixed reconnecting on lost connection.
+
 ## 0.4.0
 
 - change into a class. The lifetime of the object is managed by Node API
