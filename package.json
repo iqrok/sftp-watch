@@ -30,7 +30,7 @@
 		"build": "cmake-js build --config Release",
 		"compile": "cmake-js compile",
 		"clean": "cmake-js clean",
-		"postinstall": "npm run build"
+		"prepare": "npm run build"
 	},
 	"devDependencies": {
 		"cmake-js": "^7.3.1",
