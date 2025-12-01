@@ -1,0 +1,186 @@
+stages:
+  - build
+  - release
+  - docs
+
+cache:
+  paths:
+    - x64/
+    - arm64/
+
+linux-x64-job:
+  stage: build
+  only:
+    - tags
+  tags:
+    - sidoarum-linux
+  image:
+      name: gcc:11.5.0-bullseye
+      docker:
+          platform: linux/amd64
+  before_script:
+    - echo $CI_JOB_ID
+    - echo GE_JOB_ID_LINUX_X64=$CI_JOB_ID >> build.env
+    - apt-get update
+    - apt-get install -y build-essential autoconf automake libtool cmake git ninja-build nodejs npm zip
+    - npm i -g n cmake-js node-addon-api
+    - n v22
+    - hash -r
+    - npm link cmake-js node-addon-api
+    - mkdir -p x64
+    - if [ ! -d x64/openssl ]; then git clone --depth=1 https://github.com/openssl/openssl.git -b openssl-3.6.0 x64/openssl; fi
+    - if [ ! -d x64/zlib ]; then git clone --depth=1 https://github.com/madler/zlib.git -b v1.3.1 x64/zlib; fi
+    - if [ ! -d x64/libssh2 ]; then git clone --depth=1 https://github.com/libssh2/libssh2.git -b libssh2-1.11.1 x64/libssh2; fi
+  script:
+    - pushd x64/openssl
+    - ./Configure no-tests
+    - make -j$(nproc)
+    - make -j$(nproc) install_sw
+    - popd
+    - pushd x64/zlib
+    - CFLAGS="-fPIC" ./configure --static
+    - make -j$(nproc)
+    - make -j$(nproc) install
+    - popd
+    - pushd x64/libssh2
+    - autoreconf -fi
+    - ./configure --enable-shared --enable-static --disable-examples-build CXXFLAGS="-fPIC" CFLAGS="-fPIC"
+    - make -j$(nproc)
+    - make -j$(nproc) install
+    - popd
+    - export CMAKE_GENERATOR=Ninja
+    - export USE_STATIC_LIBS=ON
+    - export CMAKE_BUILD_TYPE=Release
+    - npm run rebuild:static
+  artifacts:
+    name: "sftp-watch.linux-x64"
+    paths:
+        - "build/lib"
+        - "exports/"
+        - "tsconfig.json"
+    reports:
+        dotenv: build.env
+
+linux-arm64-job:
+  stage: build
+  only:
+    - tags
+  tags:
+    - sidoarum-linux
+  image:
+      name: gcc:11.4.0-bullseye
+      docker:
+          platform: linux/arm64
+  before_script:
+    - echo $CI_JOB_ID
+    - echo GE_JOB_ID_LINUX_ARM64=$CI_JOB_ID >> build.env
+    - apt-get update
+    - apt-get install -y build-essential autoconf automake libtool cmake git ninja-build nodejs npm zip
+    - npm i -g n cmake-js node-addon-api
+    - n v22
+    - hash -r
+    - npm link cmake-js node-addon-api
+    - mkdir -p arm64
+    - if [ ! -d arm64/openssl ]; then git clone --depth=1 https://github.com/openssl/openssl.git -b openssl-3.6.0 arm64/openssl; fi
+    - if [ ! -d arm64/zlib ]; then git clone --depth=1 https://github.com/madler/zlib.git -b v1.3.1 arm64/zlib; fi
+    - if [ ! -d arm64/libssh2 ]; then git clone --depth=1 https://github.com/libssh2/libssh2.git -b libssh2-1.11.1 arm64/libssh2; fi
+  script:
+    - pushd arm64/openssl
+    - ./Configure no-tests
+    - make -j$(nproc)
+    - make -j$(nproc) install_sw
+    - popd
+    - pushd arm64/zlib
+    - CFLAGS="-fPIC" ./configure --static
+    - make -j$(nproc)
+    - make -j$(nproc) install
+    - popd
+    - pushd arm64/libssh2
+    - autoreconf -fi
+    - ./configure --enable-shared --enable-static --disable-examples-build CXXFLAGS="-fPIC" CFLAGS="-fPIC"
+    - make -j$(nproc)
+    - make -j$(nproc) install
+    - popd
+    - export CMAKE_GENERATOR=Ninja
+    - export USE_STATIC_LIBS=ON
+    - export CMAKE_BUILD_TYPE=Release
+    - npm run rebuild:static
+  artifacts:
+    name: "sftp-watch.linux-arm64"
+    paths:
+        - "build/lib"
+        - "exports/"
+        - "tsconfig.json"
+    reports:
+        dotenv: build.env
+
+win32-x64-job:
+  stage: build
+  only:
+    - tags
+  tags:
+    - sidoarum-win
+  before_script:
+    - echo $CI_JOB_ID
+    - '"GE_JOB_ID_WIN32_X64=$env:CI_JOB_ID" | Out-File -FilePath build.env -Append -Encoding utf8'
+    - '& $env:VCVARSALL x86_amd64'
+    - vcpkg install openssl zlib libssh2
+    - npm i -g cmake-js node-addon-api
+    - npm link cmake-js node-addon-api
+  script:
+    - npm run rebuild:static
+  artifacts:
+    name: "sftp-watch.win32-x64"
+    paths:
+        - "build/lib"
+        - "exports/"
+        - "tsconfig.json"
+    reports:
+        dotenv: build.env
+
+release-job:
+  stage: release
+  only:
+    - tags
+  tags:
+    - sidoarum-linux
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  script:
+    - echo 'running release_job'
+    - echo 'Previous Job IDs:'
+    - echo "linux-x64   ${GE_JOB_ID_LINUX_X64}"
+    - echo "linux-arm64 ${GE_JOB_ID_LINUX_ARM64}"
+    - echo "win32-x64   ${GE_JOB_ID_WIN32_X64}"
+  needs:
+    - job: linux-x64-job
+      artifacts: true
+    - job: linux-arm64-job
+      artifacts: true
+    - job: win32-x64-job
+      artifacts: true
+  release:
+    name: 'sftp-watch $CI_COMMIT_TAG'
+    description: 'Created using the release-cli'
+    tag_name: '$CI_COMMIT_TAG'
+    assets:
+      links:
+        - name: "sftp-watch.linux-x64.${CI_COMMIT_TAG}"
+          url: ${CI_PROJECT_URL}/-/jobs/${GE_JOB_ID_LINUX_X64}/artifacts/download
+        - name: "sftp-watch.linux-arm64.${CI_COMMIT_TAG}"
+          url: ${CI_PROJECT_URL}/-/jobs/${GE_JOB_ID_LINUX_ARM64}/artifacts/download
+        - name: "sftp-watch.win32-x64.${CI_COMMIT_TAG}"
+          url: ${CI_PROJECT_URL}/-/jobs/${GE_JOB_ID_WIN32_X64}/artifacts/download
+
+create-docs:
+  stage: docs
+  image: node:22-alpine
+  tags:
+    - sidoarum-linux
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+  script:
+    - npm i typedoc typedoc-plugin-rename-defaults
+    - npm run docs
+    - mv docs/ public/
+  pages:
+    publish: public
