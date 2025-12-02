@@ -15,32 +15,38 @@ linux-x64-job:
   tags:
     - sidoarum-linux
   image:
-      name: gcc:11.5.0-bullseye
+      name: node:22-bullseye-slim
       docker:
           platform: linux/amd64
   before_script:
     - echo $CI_JOB_ID
     - echo GE_JOB_ID_LINUX_X64=$CI_JOB_ID >> build.env
     - apt-get update
-    - apt-get install -y build-essential autoconf automake libtool cmake git ninja-build nodejs npm zip
-    - npm i -g n cmake-js node-addon-api
-    - n v22
-    - hash -r
+    - apt-get install -y build-essential autoconf automake libtool cmake git ninja-build zip
+    - echo "deb http://deb.debian.org/debian bookworm main contrib non-free" | tee -a /etc/apt/sources.list.d/bookworm.list
+    - echo "deb-src http://deb.debian.org/debian bookworm main contrib non-free" | tee -a /etc/apt/sources.list.d/bookworm.list
+    - 'printf "Package: *\nPin: release n=bullseye\nPin-Priority: 900\n\n" | tee -a /etc/apt/preferences'
+    - 'printf "Package: *\nPin: release n=bookworm\nPin-Priority: 100\n" | tee -a /etc/apt/preferences'
+    - apt-get update
+    - apt-get install -t bookworm -y gcc-11 g++-11
+    - update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 110 --slave /usr/bin/g++ g++ /usr/bin/g++-11
+    - rm /etc/apt/sources.list.d/bookworm.list
+    - npm i -g cmake-js node-addon-api
     - npm link cmake-js node-addon-api
     - mkdir -p x64
     - if [ ! -d x64/openssl ]; then git clone --depth=1 https://github.com/openssl/openssl.git -b openssl-3.6.0 x64/openssl; fi
     - if [ ! -d x64/zlib ]; then git clone --depth=1 https://github.com/madler/zlib.git -b v1.3.1 x64/zlib; fi
     - if [ ! -d x64/libssh2 ]; then git clone --depth=1 https://github.com/libssh2/libssh2.git -b libssh2-1.11.1 x64/libssh2; fi
   script:
-    - pushd x64/openssl
-    - ./Configure no-tests
-    - make -j$(nproc)
-    - make -j$(nproc) install_sw
-    - popd
     - pushd x64/zlib
     - CFLAGS="-fPIC" ./configure --static
     - make -j$(nproc)
     - make -j$(nproc) install
+    - popd
+    - pushd x64/openssl
+    - CFLAGS=-fPIC ./Configure no-tests no-stdio zlib --libdir=lib
+    - make -j$(nproc)
+    - make -j$(nproc) install_sw
     - popd
     - pushd x64/libssh2
     - autoreconf -fi
@@ -76,24 +82,25 @@ linux-arm64-job:
     - echo GE_JOB_ID_LINUX_ARM64=$CI_JOB_ID >> build.env
     - apt-get update
     - apt-get install -y build-essential autoconf automake libtool cmake git ninja-build nodejs npm zip
-    - npm i -g n cmake-js node-addon-api
+    - npm i -g n
     - n v22
     - hash -r
+    - npm i -g cmake-js node-addon-api
     - npm link cmake-js node-addon-api
     - mkdir -p arm64
     - if [ ! -d arm64/openssl ]; then git clone --depth=1 https://github.com/openssl/openssl.git -b openssl-3.6.0 arm64/openssl; fi
     - if [ ! -d arm64/zlib ]; then git clone --depth=1 https://github.com/madler/zlib.git -b v1.3.1 arm64/zlib; fi
     - if [ ! -d arm64/libssh2 ]; then git clone --depth=1 https://github.com/libssh2/libssh2.git -b libssh2-1.11.1 arm64/libssh2; fi
   script:
-    - pushd arm64/openssl
-    - ./Configure no-tests
-    - make -j$(nproc)
-    - make -j$(nproc) install_sw
-    - popd
     - pushd arm64/zlib
     - CFLAGS="-fPIC" ./configure --static
     - make -j$(nproc)
     - make -j$(nproc) install
+    - popd
+    - pushd arm64/openssl
+    - CFLAGS=-fPIC ./Configure no-tests no-stdio zlib --libdir=lib
+    - make -j$(nproc)
+    - make -j$(nproc) install_sw
     - popd
     - pushd arm64/libssh2
     - autoreconf -fi
@@ -173,7 +180,7 @@ release-job:
 
 create-docs:
   stage: docs
-  image: node:22-alpine
+  image: node:22-bullseye-slim
   tags:
     - sidoarum-linux
   rules:
