@@ -204,30 +204,6 @@ endif ()
 find_package(Threads REQUIRED)
 target_link_libraries("${PROJECT_NAME}" PRIVATE Threads::Threads)
 
-if (DEFINED ENV{ZLIB_LIB} AND DEFINED ENV{ZLIB_DIR})
-	message(STATUS "Using provided ZLib from env variable")
-	target_link_libraries("${PROJECT_NAME}" PRIVATE "$ENV{ZLIB_LIB}")
-	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{ZLIB_DIR}")
-else ()
-	find_package(ZLIB REQUIRED)
-	target_link_libraries("${PROJECT_NAME}" PRIVATE ZLIB::ZLIB)
-endif ()
-
-if (DEFINED ENV{OPENSSL_SSL_LIB} AND DEFINED ENV{OPENSSL_CRYPTO_LIB} AND DEFINED ENV{OPENSSL_DIR})
-	message(STATUS "Using provided OpenSSL from env variable")
-	target_link_libraries("${PROJECT_NAME}"
-		PRIVATE
-			"$ENV{OPENSSL_SSL_LIB}"
-			"$ENV{OPENSSL_CRYPTO_LIB}")
-	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{OPENSSL_DIR}")
-else ()
-	find_package(OpenSSL REQUIRED)
-	target_link_libraries("${PROJECT_NAME}"
-		PRIVATE
-			OpenSSL::SSL
-			OpenSSL::Crypto)
-endif ()
-
 if (DEFINED ENV{LIBSSH2_LIB} AND DEFINED ENV{LIBSSH2_DIR})
 	message(STATUS "Using provided libssh2 from env variable")
 	target_link_libraries("${PROJECT_NAME}" PRIVATE $ENV{LIBSSH2_LIB})
@@ -269,4 +245,28 @@ else ()
 		target_include_directories("${SFTPWATCH_LOCAL_OBJ}"
 			PRIVATE "${LIBSSH2_INCLUDE_DIR}")
 	endif ()
+endif ()
+
+if (DEFINED ENV{ZLIB_LIB} AND DEFINED ENV{ZLIB_DIR})
+	message(STATUS "Using provided ZLib from env variable")
+	target_link_libraries("${PROJECT_NAME}" PRIVATE "$ENV{ZLIB_LIB}")
+	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{ZLIB_DIR}")
+else ()
+	find_package(ZLIB REQUIRED)
+	target_link_libraries("${PROJECT_NAME}" PRIVATE ZLIB::ZLIB)
+endif ()
+
+if (DEFINED ENV{OPENSSL_SSL_LIB} AND DEFINED ENV{OPENSSL_CRYPTO_LIB} AND DEFINED ENV{OPENSSL_DIR})
+	message(STATUS "Using provided OpenSSL from env variable")
+	target_link_libraries("${PROJECT_NAME}"
+		PRIVATE
+			"$ENV{OPENSSL_SSL_LIB}"
+			"$ENV{OPENSSL_CRYPTO_LIB}")
+	target_include_directories("${PROJECT_NAME}" PRIVATE "$ENV{OPENSSL_DIR}")
+else ()
+	find_package(OpenSSL REQUIRED)
+	target_link_libraries("${PROJECT_NAME}"
+		PRIVATE
+			OpenSSL::SSL
+			OpenSSL::Crypto)
 endif ()
